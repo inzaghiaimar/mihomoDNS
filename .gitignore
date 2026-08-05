@@ -1,0 +1,15 @@
+# 子项目（install.sh 运行时自动从上游克隆，不纳入本仓库）
+clash-for-linux/
+mosdns/
+
+# 运行时目录与配置
+runtime/
+.env
+
+# macOS
+.DS_Store
+
+# 编辑器
+*.swp
+.vscode/
+.idea/
