@@ -1,0 +1,58 @@
+# mosdns-config.yaml — mosdns 配置参考模板
+# 实际运行配置由 scripts/airport.sh::generate_mosdns_config_for_airport() 生成到
+# runtime/mosdns/config_custom.yaml，按机场 DNS 与 clash SOCKS 端口动态填充。
+# 本文件仅说明字段结构，不在运行时直接加载。
+
+log:
+  level: info
+  file: /path/to/mosdns.log
+
+plugins:
+  - tag: main_server
+    type: server
+    args:
+      entry:
+        - main_sequence
+      listen: 127.0.0.1:5335
+
+  - tag: main_sequence
+    type: sequence
+    args:
+      - exec: $cache
+      - exec: $forward_domestic
+      - matches: qname 500
+        exec: NOERROR
+      - matches: qname 86400
+        exec: $forward_proxy
+
+  # 国内 DNS：直连
+  - tag: forward_domestic
+    type: forward
+    args:
+      upstreams:
+        - tag: domestic_0
+          upstream:
+            - "223.5.5.5"
+        - tag: domestic_1
+          upstream:
+            - "119.29.29.29"
+
+  # 国外 DNS：经 clash SOCKS（mixed-port 兼容 socks5）避免 DNS 泄露
+  - tag: forward_proxy
+    type: forward
+    args:
+      upstreams:
+        - tag: proxy_0
+          upstream:
+            - "https://1.1.1.1/dns-query"
+          socks5: "127.0.0.1:7890"
+        - tag: proxy_1
+          upstream:
+            - "tls://8.8.8.8:853"
+          socks5: "127.0.0.1:7890"
+
+  - tag: cache
+    type: cache
+    args:
+      size: 4096
+      lazy_cache_ttl: 86400

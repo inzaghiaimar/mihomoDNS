@@ -1,0 +1,35 @@
+# clash-template.yaml — clash 运行配置参考模板
+# 实际运行配置由 clash-for-linux 的 build 链生成（runtime/config.yaml），
+# 本文件仅作为端口/DNS 联动的参考，不在运行时直接加载。
+# 机场个性化覆盖请见 clash-for-linux/config/mixin.yaml（由 scripts/airport.sh 生成）。
+
+mixed-port: 7890
+allow-lan: true
+mode: rule
+log-level: info
+external-controller: 0.0.0.0:9090
+
+tun:
+  enable: false
+  stack: system
+  auto-route: true
+  auto-detect-interface: true
+  dns-hijack:
+    - any:53
+    - tcp://any:53
+
+dns:
+  enable: true
+  listen: 0.0.0.0:1053
+  enhanced-mode: fakeip
+  fake-ip-range: 198.18.0.1/16
+  fake-ip-filter:
+    - '*.lan'
+    - '*.local'
+    - '+.msftconnecttest.com'
+    - '+.msftncsi.com'
+
+proxies: []
+proxy-groups: []
+rules:
+  - MATCH,节点选择
