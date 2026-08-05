@@ -1,0 +1,55 @@
+diff --git a/src/components/overview/IPCheck.vue b/src/components/overview/IPCheck.vue
+index 4cbafcd..39aa13c 100644
+--- a/src/components/overview/IPCheck.vue
++++ b/src/components/overview/IPCheck.vue
+@@ -30,0 +31,4 @@
++    <div class="text-base-content/50 mt-1 text-xs">
++      {{ $t('browserEgressIPTip') }}
++    </div>
++
+diff --git a/src/i18n/en.ts b/src/i18n/en.ts
+index dab7c33..8f74f36 100644
+--- a/src/i18n/en.ts
++++ b/src/i18n/en.ts
+@@ -317 +317 @@ const en = {
+-  autoIPCheckWhenStart: 'Auto-check IP on startup',
++  autoIPCheckWhenStart: 'Auto-check browser egress IP on startup',
+@@ -319 +319,3 @@ const en = {
+-  networkInfo: 'Network info',
++  networkInfo: 'Browser egress IP',
++  browserEgressIPTip:
++    "This shows the current browser's egress IP, which may differ from the backend proxy exit.",
+diff --git a/src/i18n/ru.ts b/src/i18n/ru.ts
+index 1dec38e..8be91cc 100644
+--- a/src/i18n/ru.ts
++++ b/src/i18n/ru.ts
+@@ -319 +319 @@ const ru: LANG_MESSAGE = {
+-  autoIPCheckWhenStart: 'Автоматическая проверка IP при запуске',
++  autoIPCheckWhenStart: 'Автоматическая проверка исходящего IP браузера при запуске',
+@@ -321 +321,3 @@ const ru: LANG_MESSAGE = {
+-  networkInfo: 'Информация о сети',
++  networkInfo: 'Исходящий IP браузера',
++  browserEgressIPTip:
++    'Здесь показан исходящий IP текущего браузера; он может отличаться от выходного IP прокси на бэкенде.',
+diff --git a/src/i18n/zh-tw.ts b/src/i18n/zh-tw.ts
+index d6bb953..bfb2b12 100644
+--- a/src/i18n/zh-tw.ts
++++ b/src/i18n/zh-tw.ts
+@@ -317 +317 @@ const zhTW: LANG_MESSAGE = {
+-  autoIPCheckWhenStart: '自動檢查 IP',
++  autoIPCheckWhenStart: '自動檢查瀏覽器出口 IP',
+@@ -319 +319,2 @@ const zhTW: LANG_MESSAGE = {
+-  networkInfo: '網路資訊',
++  networkInfo: '瀏覽器出口 IP',
++  browserEgressIPTip: '此處顯示的是目前瀏覽器的出口 IP，可能與後端代理出口不同。',
+diff --git a/src/i18n/zh.ts b/src/i18n/zh.ts
+index 7588ebd..dca714d 100644
+--- a/src/i18n/zh.ts
++++ b/src/i18n/zh.ts
+@@ -317 +317 @@ const zh: LANG_MESSAGE = {
+-  autoIPCheckWhenStart: '自动检查 IP',
++  autoIPCheckWhenStart: '自动检查浏览器出口 IP',
+@@ -319 +319,2 @@ const zh: LANG_MESSAGE = {
+-  networkInfo: '网络信息',
++  networkInfo: '浏览器出口 IP',
++  browserEgressIPTip: '此处显示的是当前浏览器的出口 IP，可能与后端代理出口不同。',

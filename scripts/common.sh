@@ -11,13 +11,61 @@ else
   C_CYAN=''; C_GREEN=''; C_YELLOW=''; C_RED=''; C_BLUE=''; C_RESET=''
 fi
 
-log()     { printf '%s\n' "$*"; }
-info()    { printf '%sℹ%s %s\n' "$C_BLUE" "$C_RESET" "$*"; }
-step()    { printf '%s➜%s %s\n' "$C_CYAN" "$C_RESET" "$*"; }
-success() { printf '%s✔ %s%s\n' "$C_GREEN" "$*" "$C_RESET"; }
-warn()    { printf '%s⚠ %s%s\n' "$C_YELLOW" "$*" "$C_RESET" >&2; }
-error()   { printf '%s✘ %s%s\n' "$C_RED" "$*" "$C_RESET" >&2; }
+log()     { printf '%s\n' "$*"; log_file "$*"; }
+info()    { printf '%sℹ%s %s\n' "$C_BLUE" "$C_RESET" "$*"; log_file "INFO  $*"; }
+step()    { printf '%s➜%s %s\n' "$C_CYAN" "$C_RESET" "$*"; log_file "STEP  $*"; }
+success() { printf '%s✔ %s%s\n' "$C_GREEN" "$*" "$C_RESET"; log_file "OK    $*"; }
+warn()    { printf '%s⚠ %s%s\n' "$C_YELLOW" "$*" "$C_RESET" >&2; log_file "WARN  $*"; }
+error()   { printf '%s✘ %s%s\n' "$C_RED" "$*" "$C_RESET" >&2; log_file "ERROR $*"; }
 die()     { error "$*"; exit 1; }
+
+# verbose 模式：打印执行的每条命令
+VERBOSE="${VERBOSE:-false}"
+verbose_on()  { VERBOSE=true; set -x; }
+verbose_off() { VERBOSE=false; set +x; }
+
+# 日志文件：所有 log/info/step/... 同时写入此文件
+LOG_FILE="${LOG_FILE:-}"
+log_file() {
+  [[ -z "$LOG_FILE" ]] && return 0
+  printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$LOG_FILE" 2>/dev/null || true
+}
+init_log_file() {
+  LOG_FILE="${1:-}"
+  [[ -z "$LOG_FILE" ]] && return 0
+  mkdir -p "$(dirname "$LOG_FILE")"
+  : > "$LOG_FILE"
+  log_file "===== 日志开始 ====="
+}
+
+# 步骤计时：run_step "名称" cmd...
+STEP_START_TS=0
+STEP_NAME=""
+run_step() {
+  local name="$1"; shift
+  STEP_NAME="$name"
+  STEP_START_TS=$(date +%s)
+  log_file ">>> 开始: $name"
+  if ! "$@"; then
+    local rc=$?
+    error "步骤失败: $name（退出码 $rc）"
+    [[ -n "$LOG_FILE" ]] && error "详见日志: $LOG_FILE"
+    die "已终止"
+  fi
+  local elapsed=$(( $(date +%s) - STEP_START_TS ))
+  log_file "<<< 完成: $name (耗时 ${elapsed}s)"
+  STEP_NAME=""
+}
+
+# 全局错误捕获（set -e 触发时输出最后一条命令与行号）
+trap_errors() {
+  local rc=$?
+  local line="${BASH_LINENO[0]:-?}"
+  error "脚本异常退出（行 $line，退出码 $rc）"
+  [[ -n "${STEP_NAME:-}" ]] && error "失败步骤: $STEP_NAME"
+  [[ -n "$LOG_FILE" ]] && error "详见日志: $LOG_FILE"
+  exit $rc
+}
 
 confirm() {
   local prompt="$1" default="${2:-y}"
@@ -154,6 +202,43 @@ ensure_cmd() {
 # ============ systemd / 服务管理 ============
 have_systemd() {
   [[ -d /etc/systemd/system ]] && command -v systemctl >/dev/null 2>&1
+}
+
+# 批量前置依赖检查：require_cmds curl wget tar bash
+# 任一缺失则汇总报错（不自动安装，保持前置检查的纯净）
+# 用法: require_cmds curl wget tar
+#       require_cmds -o curl wget tar   # -o: 可选，缺失只 warn 不 fail
+require_cmds() {
+  local optional=false
+  [[ "${1:-}" == "-o" ]] && { optional=true; shift; }
+  local missing=()
+  for c in "$@"; do
+    if ! command -v "$c" >/dev/null 2>&1; then
+      missing+=("$c")
+    fi
+  done
+  if (( ${#missing[@]} > 0 )); then
+    if $optional; then
+      warn "可选命令缺失: ${missing[*]}（不影响核心安装）"
+    else
+      error "缺少依赖命令: ${missing[*]}"
+      info "请先安装，例如: apt-get install -y ${missing[*]}"
+      return 1
+    fi
+  fi
+  return 0
+}
+
+# 网络连通性检查（可选）：检测 GitHub / DNS 是否可达
+check_network() {
+  local target="${1:-https://github.com}"
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSI --connect-timeout 10 "$target" >/dev/null 2>&1
+  elif command -v wget >/dev/null 2>&1; then
+    wget -q --timeout=10 --spider "$target" 2>/dev/null
+  else
+    return 0  # 无工具则跳过
+  fi
 }
 
 # ============ 端口占用检测 ============

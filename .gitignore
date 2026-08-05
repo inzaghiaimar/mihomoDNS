@@ -1,10 +1,11 @@
-# 子项目（install.sh 运行时自动从上游克隆，不纳入本仓库）
-clash-for-linux/
-mosdns/
-
-# 运行时目录与配置
+# 运行时目录与配置（自动生成，不入库）
 runtime/
 .env
+
+# 子项目内的运行时产物（子项目源码本身已 vendored 入库）
+clash-for-linux/runtime/
+clash-for-linux/.env
+clash-for-linux/config/mixin.yaml
 
 # macOS
 .DS_Store

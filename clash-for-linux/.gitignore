@@ -1,0 +1,31 @@
+# IDE
+.idea/
+.vscode/
+
+# Local env
+.env
+
+# Runtime
+runtime/
+
+# Optional offline assets
+resources/bin/mihomo/
+resources/bin/clash/
+resources/bin/yq/
+resources/bin/subconverter/
+resources/geo/
+resources/asset-manifest.env
+resources/SHA256SUMS
+
+# Local dashboard unpacked files
+resources/dashboard/dist/
+
+# Keep packaged dashboard asset
+!resources/dashboard/dist.zip
+
+# Local test scripts
+test.sh
+
+# OpenClaw control-plane local scaffolding
+ai/
+.openclaw-control-plane/
