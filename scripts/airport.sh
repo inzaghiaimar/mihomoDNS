@@ -377,13 +377,13 @@ ${sequence_args}
   - tag: main_udp_server
     type: udp_server
     args:
-      entry: main_sequence
+      entry: \$main_sequence
       listen: 127.0.0.1:${MOSDNS_DNS_PORT}
 
   - tag: main_tcp_server
     type: tcp_server
     args:
-      entry: main_sequence
+      entry: \$main_sequence
       listen: 127.0.0.1:${MOSDNS_DNS_PORT}
 EOF
   success "已生成 mosdns 配置：$out"
