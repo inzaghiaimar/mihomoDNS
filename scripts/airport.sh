@@ -265,14 +265,6 @@ log:
   file: "${MOSDNS_RUNTIME_DIR}/mosdns.log"
 
 plugins:
-  - tag: main_sequence
-    type: sequence
-    args:
-      - exec: \$cache
-      - exec: \$forward_domestic
-      # 如需把国外域名走代理上游，导入 config_all.zip 后，
-      # 在此追加 matches+forward_proxy 规则（见 mosdns 文档）。
-
   - tag: forward_domestic
     type: forward
     args:
@@ -289,6 +281,14 @@ ${proxy_block}
     args:
       size: 4096
       lazy_cache_ttl: 86400
+
+  - tag: main_sequence
+    type: sequence
+    args:
+      - exec: \$cache
+      - exec: \$forward_domestic
+      # 如需把国外域名走代理上游，导入 config_all.zip 后，
+      # 在此追加 matches+forward_proxy 规则（见 mosdns 文档）。
 
   - tag: main_udp_server
     type: udp_server
