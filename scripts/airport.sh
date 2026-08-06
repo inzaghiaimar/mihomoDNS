@@ -192,10 +192,13 @@ $AIRPORT_PROXY_GROUPS_EXTRA
 EOF
     fi
 
+    # 兜底规则用 DIRECT 而非「节点选择」：很多机场订阅不带 proxy-groups，
+    # 引用不存在的策略组会导致 mihomo 校验失败（proxy [节点选择] not found）。
+    # 需要走代理的流量由订阅自带 rules 决定；无 rules 时全部直连最安全。
     cat >> "$1" <<'EOF'
 append:
   rules:
-    - MATCH,节点选择
+    - MATCH,DIRECT
 EOF
   }
 
