@@ -25,6 +25,7 @@
   - [爱快 iKuai 静态路由](#爱快-ikuai-静态路由)
   - [路由参数一览](#路由参数一览)
   - [删除静态路由](#删除静态路由)
+- [PVE 下虚拟机 / LXC 容器设置](#pve-下虚拟机--lxc-容器设置)
 - [安装后使用](#安装后使用)
 - [卸载](#卸载)
 - [目录结构](#目录结构)
@@ -500,6 +501,214 @@ bash install.sh --route-target ros --route-clean --route-lan-ip 192.168.1.2 --ro
 ```
 
 > **注意**：Linux 目标删除时只清理本项目写入的 `/etc/sysctl.d/99-mihomoDNS.conf`，不擅自改回默认网关与 rp_filter，避免断网。请按提示手动恢复。
+
+---
+
+## PVE 下虚拟机 / LXC 容器设置
+
+Proxmox VE（PVE）是部署旁路由/DNS 服务的常见平台。mihomoDNS 可运行在 **KVM 虚拟机** 或 **LXC 容器** 中，两者在内核共享、资源占用、网络配置上有差异。
+
+### 选型对比
+
+| 维度 | LXC 容器 | KVM 虚拟机 |
+| --- | --- | --- |
+| 资源占用 | 极低（共享宿主内核，~64M 即可） | 较高（独立内核，建议 ≥512M） |
+| 启动速度 | 秒级 | 较慢（需引导内核） |
+| 内核模块 | 依赖宿主加载（TUN/TAP 需宿主开启） | 自带内核，自主加载 |
+| Tun 透明代理 | 需宿主 `/dev/net/tun` 透传 | 原生支持 |
+| 网络性能 | 接近宿主（veth 直连） | 略有损耗（virtio） |
+| 推荐场景 | 纯代理 + DNS 分流（非 Tun 模式） | 需要 Tun 模式 / 完整内核功能 |
+
+> **结论**：若只用 `fakeip` + SOCKS 代理 + mosdns DNS 分流（本项目的默认模式），**LXC 容器**更轻量；若需要 `AIRPORT_TUN=true`（Tun 透明代理，劫持全局流量），用 **KVM 虚拟机**更省心。
+
+### LXC 容器设置
+
+#### 1) 创建容器
+
+PVE 后台 → 右键节点 → 创建 CT：
+
+- **模板**：建议 Debian 12 或 Ubuntu 22.04 LXC 模板
+- **CPU/内存**：1 核 / 256M 起（mosdns 与 clash 共跑建议 ≥256M）
+- **磁盘**：2GB 足够（含 vendored 子项目源码）
+- **网络**：见下方网络配置
+
+#### 2) 关键特性开关
+
+LXC 默认是非特权容器，需要开启以下特性才能正常运行代理与 DNS：
+
+**在 PVE 宿主执行**（把 `100` 换成你的 CTID）：
+
+```bash
+# 编辑容器配置
+nano /etc/pve/lxc/100.conf
+```
+
+在配置文件末尾添加：
+
+```ini
+# 开启 TUN 设备（clash Tun 模式 / mosdns 需要）
+lxc.cgroup2.devices.allow: c 10:200 rwm
+lxc.mount.entry: /dev/net/tun dev/net/tun none bind,create=file
+
+# 开启 net_admin 与 net_raw（iptables/路由需要）
+lxc.capabilities: cap_net_admin cap_net_raw cap_net_bind_service
+```
+
+> - `cap_net_admin` — 允许容器内执行 `ip route`、`iptables`、改网卡
+> - `cap_net_raw` — 允许 raw socket（部分 DNS 探测需要）
+> - `cap_net_bind_service` — 允许绑定 1024 以下端口（若想让 mosdns 监听 53）
+
+或者创建**特权容器**（简化但安全性低，仅内网推荐）：
+
+```bash
+# 创建时勾选 "Unprivileged container" = 否
+# 或命令行：
+pct create 100 debian-12-standard_12.2-1_amd64.tar.zst \
+  --rootfs local-lvm:4 --ostype debian --hostname mihomoDNS \
+  --memory 256 --swap 0 --net0 name=eth0,bridge=vmbr0,ip=192.168.1.2/24,gw=192.168.1.1 \
+  --unprivileged 0
+```
+
+#### 3) 宿主加载 TUN 模块
+
+```bash
+# PVE 宿主执行
+modprobe tun
+echo "tun" >> /etc/modules-load.d/tun.conf
+```
+
+#### 4) 网络配置
+
+LXC 容器使用 veth 桥接，等同于直连 LAN：
+
+```bash
+# 容器内 /etc/network/interfaces
+auto eth0
+iface eth0 inet static
+    address 192.168.1.2/24
+    gateway 192.168.1.1
+    dns-nameservers 127.0.0.1  # 自身 mosdns（启动后）
+```
+
+或在创建时指定（PVE 后台 → 网络 → DHCP/静态 IP）。
+
+#### 5) 安装 mihomoDNS
+
+```bash
+# 进入容器
+pct enter 100
+
+# 安装
+apt update && apt install -y curl tar git
+git clone https://github.com/inzaghiaimar/mihomoDNS.git
+cd mihomoDNS
+bash install.sh --airport generic --subscription-url "https://..."
+```
+
+#### 6) 路由配合
+
+LXC 容器网络与虚拟机等价，可直接用本项目的路由功能：
+
+```bash
+# 容器内写入本机路由（默认网关 + rp_filter）
+bash install.sh --route-target linux --route-gateway 192.168.1.1
+
+# 或在 ROS/爱快主路由上做 DNS 劫持指向容器 IP
+bash install.sh --route-target ros --route-lan-ip 192.168.1.2 --route-ssh-host 192.168.1.1
+```
+
+### KVM 虚拟机设置
+
+#### 1) 创建虚拟机
+
+PVE 后台 → 创建虚拟机：
+
+- **系统**：Debian 12 / Ubuntu 22.04 Server
+- **CPU/内存**：1 核 / 512M 起
+- **磁盘**：8GB（系统 + 项目）
+- **网络**：VirtIO (paravirtualized) 桥接到 `vmbr0`
+
+#### 2) 网络配置
+
+KVM 虚拟机自带完整内核，Tun/iptables 等开箱即用：
+
+```bash
+# 虚拟机内 /etc/network/interfaces
+auto ens18
+iface ens18 inet static
+    address 192.168.1.2/24
+    gateway 192.168.1.1
+```
+
+#### 3) 安装 mihomoDNS
+
+```bash
+apt update && apt install -y curl tar git
+git clone https://github.com/inzaghiaimar/mihomoDNS.git
+cd mihomoDNS
+bash install.sh --airport generic --subscription-url "https://..."
+
+# 若需要 Tun 透明代理（KVM 推荐用此模式）
+# 编辑 airports/generic.conf 设置 AIRPORT_TUN=true
+```
+
+#### 4) Tun 模式（仅 KVM 推荐）
+
+KVM 虚拟机有独立内核，可完整支持 Tun 透明代理：
+
+```bash
+# 编辑机场配置开启 Tun
+sed -i 's/AIRPORT_TUN="false"/AIRPORT_TUN="true"/' airports/generic.conf
+
+# 重新安装（会生成含 Tun 的 clash 配置）
+bash install.sh --airport generic --subscription-url "https://..."
+```
+
+Tun 模式下 clash 会创建虚拟网卡接管全局流量，无需主路由配合做 DNAT，但需关闭容器/虚拟机自身的防火墙对 Tun 网卡的拦截。
+
+### PVE 网络拓扑示例
+
+```
+┌──────────────────────────────────────────────────────────┐
+│                    PVE 宿主机                              │
+│                                                          │
+│  ┌──────────────┐    ┌──────────────┐                   │
+│  │ ROS/爱快 主路由│    │  vmbr0 桥接   │                   │
+│  │ (或虚拟机/CT)  │◄──►│  192.168.1.x │                   │
+│  └──────┬───────┘    └──────┬───────┘                   │
+│         │                   │                            │
+│         │      ┌────────────┼────────────┐              │
+│         │      │            │            │              │
+│  ┌──────┴──┐ ┌─┴──────┐ ┌──┴─────┐ ┌────┴────┐        │
+│  │ 客户端A  │ │客户端B │ │ LXC/VM │ │ 其他VM  │        │
+│  │ .10     │ │ .11    │ │ .2     │ │         │        │
+│  └─────────┘ └────────┘ │mihomoDNS│ └─────────┘        │
+│                          │mosdns   │                   │
+│                          │clash    │                   │
+│                          └─────────┘                   │
+└──────────────────────────────────────────────────────────┘
+```
+
+- 主路由（ROS/爱快）可以是 PVE 上的虚拟机/LXC，也可以是物理机
+- mihomoDNS 作为旁路由/DNS 服务器，IP 固定为 `192.168.1.2`
+- 客户端 DNS 流量经主路由 DNAT 指向 `192.168.1.2:5335`
+
+### 常见 PVE 问题
+
+**Q：LXC 容器内 `ip route` 报权限不足？**
+A：容器缺少 `cap_net_admin`。编辑 `/etc/pve/lxc/<CTID>.conf` 添加 `lxc.capabilities: cap_net_admin cap_net_raw`，重启容器。
+
+**Q：LXC 内 clash Tun 模式启动失败（`/dev/net/tun` 不存在）？**
+A：宿主执行 `modprobe tun`，并在容器配置添加 `lxc.mount.entry: /dev/net/tun dev/net/tun none bind,create=file`。若仍不行，改用 KVM 虚拟机或关闭 Tun（`AIRPORT_TUN=false`，用 fakeip + SOCKS 模式即可）。
+
+**Q：LXC 容器内 mosdns 无法绑定 53 端口？**
+A：非特权容器默认无法绑 1024 以下端口。方案：① 用主路由 DNAT 53→5335（推荐）；② 添加 `cap_net_bind_service`；③ 用特权容器。
+
+**Q：PVE 宿主与容器/虚拟机网络不通？**
+A：确认 `vmbr0` 桥接正常、容器/虚拟机的 IP 与宿主在同一网段、防火墙未拦截。用 `ping` 与 `tcpdump` 排查。
+
+**Q：KVM 虚拟机网卡名不是 eth0？**
+A：现代 Linux 用预测网卡名（如 `ens18`）。用 `--route-lan-if ens18` 指定，或恢复传统命名：`ln -s /dev/null /etc/systemd/network/99-default.link` 后重启。
 
 ---
 
