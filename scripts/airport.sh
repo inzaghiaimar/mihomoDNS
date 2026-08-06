@@ -119,10 +119,14 @@ apply_airport_to_env() {
 }
 
 # ============ 生成 clash mixin（机场特定覆盖） ============
-# 输出到 clash-for-linux 的 mixin 文件，由 clash-for-linux 编译时合并
+# 输出到 clash-for-linux 的 mixin 文件，由 clash-for-linux 编译时合并。
+# clash-for-linux 新版把 mixin 从 config/mixin.yaml 迁移到 runtime/mixin.yaml，
+# mixin_read_file() 优先读 runtime 版；若 runtime 版存在而 config 版不一致会告警。
+# 因此这里同时写两个路径，保持一致，避免告警与旧文件干扰。
 generate_clash_mixin_for_airport() {
   local mixin_file="$CLASH_DIR/config/mixin.yaml"
-  mkdir -p "$(dirname "$mixin_file")"
+  local mixin_runtime_file="$CLASH_DIR/runtime/mixin.yaml"
+  mkdir -p "$(dirname "$mixin_file")" "$(dirname "$mixin_runtime_file")"
 
   local extra_rules_block=""
   if [[ -n "$AIRPORT_RULES_EXTRA" ]]; then
@@ -140,7 +144,9 @@ generate_clash_mixin_for_airport() {
     *)                  enhanced_mode="fake-ip" ;;
   esac
 
-  cat > "$mixin_file" <<EOF
+  # 用函数生成内容，避免重复写两遍
+  _write_mixin_content() {
+    cat > "$1" <<EOF
 # 由 clash-mosdns 一键安装项目按机场（${AIRPORT_ID}）自动生成
 # 手动修改后请执行 clash mixin edit 重新生成运行配置
 override:
@@ -160,42 +166,48 @@ override:
       - '+.msftconnecttest.com'
       - '+.msftncsi.com'
 EOF
-
-  # IPv6 处理
-  case "$AIRPORT_IPV6" in
-    on) cat >> "$mixin_file" <<'EOF'
+    # IPv6 处理
+    case "$AIRPORT_IPV6" in
+      on) cat >> "$1" <<'EOF'
     ipv6: true
 EOF
-        ;;
-    off) cat >> "$mixin_file" <<'EOF'
+          ;;
+      off) cat >> "$1" <<'EOF'
     ipv6: false
 EOF
-        ;;
-    *) ;; # auto 不覆盖
-  esac
+          ;;
+      *) ;; # auto 不覆盖
+    esac
 
-  cat >> "$mixin_file" <<EOF
+    cat >> "$1" <<EOF
 prepend:
   rules:
 $extra_rules_block
 EOF
 
-  if [[ -n "$AIRPORT_PROXY_GROUPS_EXTRA" ]]; then
-    cat >> "$mixin_file" <<EOF
+    if [[ -n "$AIRPORT_PROXY_GROUPS_EXTRA" ]]; then
+      cat >> "$1" <<EOF
   proxy-groups:
 $AIRPORT_PROXY_GROUPS_EXTRA
 EOF
-  fi
+    fi
 
-  cat >> "$mixin_file" <<'EOF'
+    cat >> "$1" <<'EOF'
 append:
   rules:
     - MATCH,节点选择
 EOF
-  success "已生成 clash mixin：$mixin_file"
+  }
+
+  _write_mixin_content "$mixin_file"
+  _write_mixin_content "$mixin_runtime_file"
+  success "已生成 clash mixin：$mixin_file（同步 runtime 版）"
 }
 
 # ============ 生成 mosdns 配置（按机场 DNS 需求） ============
+# 配置文件名沿用 mosdns 官方约定的 config_custom.yaml；
+# mosdns start -d <dir> 默认找 config.yaml，因此 systemd unit 的 ExecStart
+# 需用 -c 显式指定 config_custom.yaml（见 install-mosdns.sh）。
 generate_mosdns_config_for_airport() {
   local out="$MOSDNS_RUNTIME_DIR/config_custom.yaml"
   mkdir -p "$MOSDNS_RUNTIME_DIR"

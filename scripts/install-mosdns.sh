@@ -92,8 +92,10 @@ install_mosdns_service() {
     return 0
   fi
 
-  # mosdns v0.7.x（cobra CLI）正确启动语法：mosdns start -d <dir>
+  # mosdns v0.7.x（cobra CLI）正确启动语法：mosdns start -d <dir> -c <config>
   # 旧版 mosdns 直接用 -d，新版会报 "unknown shorthand flag: 'd'"。
+  # -c 指定配置文件（mosdns 默认找 config.yaml，本项目用 config_custom.yaml）。
+  local mosdns_bin; mosdns_bin="$(command -v mosdns)"
   cat > "$unit_file" <<EOF
 [Unit]
 Description=MosDNS-T DNS Splitter (clash-mosdns)
@@ -104,7 +106,7 @@ Wants=network-online.target
 Type=simple
 User=$MOSDNS_SERVICE_USER
 WorkingDirectory=$MOSDNS_RUNTIME_DIR
-ExecStart=$(command -v mosdns) start -d $MOSDNS_RUNTIME_DIR
+ExecStart=$mosdns_bin start -d $MOSDNS_RUNTIME_DIR -c $MOSDNS_RUNTIME_DIR/config_custom.yaml
 Restart=on-failure
 RestartSec=5
 LimitNOFILE=65535
