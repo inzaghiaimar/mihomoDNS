@@ -129,6 +129,17 @@ generate_clash_mixin_for_airport() {
     extra_rules_block="$AIRPORT_RULES_EXTRA"
   fi
 
+  # mihomo 内核 enhanced-mode 合法值映射：
+  #   fakeip / fake-ip  → fake-ip（mihomo 新版要求带连字符）
+  #   redir-host / redir → fake-ip（mihomo v1.19+ 已废弃 redir-host，兜底为 fake-ip）
+  #   其它未知值         → fake-ip（兜底）
+  local enhanced_mode="fake-ip"
+  case "$AIRPORT_DNS_MODE" in
+    fakeip|fake-ip)     enhanced_mode="fake-ip" ;;
+    redir-host|redir)   enhanced_mode="fake-ip" ;;  # redir-host 已废弃，兜底
+    *)                  enhanced_mode="fake-ip" ;;
+  esac
+
   cat > "$mixin_file" <<EOF
 # 由 clash-mosdns 一键安装项目按机场（${AIRPORT_ID}）自动生成
 # 手动修改后请执行 clash mixin edit 重新生成运行配置
@@ -141,7 +152,7 @@ override:
   dns:
     enable: true
     listen: 0.0.0.0:$CLASH_DNS_PORT
-    enhanced-mode: $AIRPORT_DNS_MODE
+    enhanced-mode: $enhanced_mode
     fake-ip-range: 198.18.0.1/16
     fake-ip-filter:
       - '*.lan'

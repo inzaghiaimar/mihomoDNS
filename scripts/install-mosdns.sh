@@ -83,7 +83,7 @@ install_mosdns() {
 # 写入 systemd unit（root 安装时）
 install_mosdns_service() {
   if ! have_systemd; then
-    warn "未检测到 systemd，mosdns 需手动启动：mosdns -d $MOSDNS_RUNTIME_DIR"
+    warn "未检测到 systemd，mosdns 需手动启动：mosdns start -d $MOSDNS_RUNTIME_DIR"
     return 0
   fi
   local unit_file="/etc/systemd/system/mosdns.service"
@@ -92,6 +92,8 @@ install_mosdns_service() {
     return 0
   fi
 
+  # mosdns v0.7.x（cobra CLI）正确启动语法：mosdns start -d <dir>
+  # 旧版 mosdns 直接用 -d，新版会报 "unknown shorthand flag: 'd'"。
   cat > "$unit_file" <<EOF
 [Unit]
 Description=MosDNS-T DNS Splitter (clash-mosdns)
@@ -102,7 +104,7 @@ Wants=network-online.target
 Type=simple
 User=$MOSDNS_SERVICE_USER
 WorkingDirectory=$MOSDNS_RUNTIME_DIR
-ExecStart=$(command -v mosdns) -d $MOSDNS_RUNTIME_DIR
+ExecStart=$(command -v mosdns) start -d $MOSDNS_RUNTIME_DIR
 Restart=on-failure
 RestartSec=5
 LimitNOFILE=65535

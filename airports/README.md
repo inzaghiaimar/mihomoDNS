@@ -14,7 +14,7 @@ IPv6 支持、DNS 策略、流媒体规则等方面存在差异。本目录用 `
 | `AIRPORT_SUBSCRIPTION_URL` | 订阅链接（clash/mihomo YAML、base64 或分享链接均可） |
 | `AIRPORT_SUBSCRIPTION_UA` | 拉取订阅时的 User-Agent（默认 `clash-verge/v2.4.0`，兼容 hy2/anytls） |
 | `AIRPORT_IPV6` | `auto` / `on` / `off`，是否启用内核 IPv6 与 DNS AAAA |
-| `AIRPORT_DNS_MODE` | `fakeip` / `redir-host`，clash DNS 增强模式 |
+| `AIRPORT_DNS_MODE` | DNS 增强模式。可填 `fakeip`/`fake-ip`/`redir-host`/`redir`；mihomo v1.19+ 已废弃 redir-host，脚本会自动兜底为 `fake-ip` |
 | `AIRPORT_KERNEL` | `mihomo` / `clash`，代理内核 |
 | `AIRPORT_DOMESTIC_DNS` | 国内 DNS，分号分隔，如 `223.5.5.5;119.29.29.29` |
 | `AIRPORT_PROXY_DNS` | 国外 DNS（走代理），如 `https://1.1.1.1/dns-query;tls://8.8.8.8:853` |
@@ -32,7 +32,7 @@ IPv6 支持、DNS 策略、流媒体规则等方面存在差异。本目录用 `
 | `hysteria2.conf` | Hysteria2 / Hy2 机场 |
 | `ipv6-only.conf` | IPv6-only 节点机场 |
 | `streaming.conf` | 流媒体解锁机场 |
-| `china-optimized.conf` | 国内优化、redir-host 模式 |
+| `china-optimized.conf` | 国内优化、IPv6 off |
 
 ## 使用方式
 

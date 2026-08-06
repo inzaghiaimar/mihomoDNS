@@ -206,7 +206,7 @@ bash install.sh [选项]
 | `hysteria2` | [airports/hysteria2.conf](airports/hysteria2.conf) | Hy2 机场 | mihomo 内核，需 UDP 放行 |
 | `ipv6-only` | [airports/ipv6-only.conf](airports/ipv6-only.conf) | IPv6-only 节点 | 内核 IPv6 + DNS AAAA 开 |
 | `streaming` | [airports/streaming.conf](airports/streaming.conf) | 流媒体机场 | 内置 Netflix/Disney+/YouTube 规则 |
-| `china-optimized` | [airports/china-optimized.conf](airports/china-optimized.conf) | 国内优化 | redir-host 模式，IPv6 off |
+| `china-optimized` | [airports/china-optimized.conf](airports/china-optimized.conf) | 国内优化 | IPv6 off，国内 DNS 含 114 |
 
 ### 新增自定义机场
 
@@ -223,7 +223,7 @@ bash install.sh --airport myairport
 | `AIRPORT_NAME` | 机场显示名 | `"流媒体优化机场"` |
 | `AIRPORT_SUBSCRIPTION_URL` | 订阅链接 | `"https://..."` |
 | `AIRPORT_IPV6` | 是否启用内核 IPv6 与 DNS AAAA | `auto` / `on` / `off` |
-| `AIRPORT_DNS_MODE` | clash DNS 增强模式 | `fakeip` / `redir-host` |
+| `AIRPORT_DNS_MODE` | clash DNS 增强模式 | `fakeip` / `fake-ip` / `redir-host`（脚本自动兜底为 mihomo 合法的 `fake-ip`） |
 | `AIRPORT_KERNEL` | 代理内核 | `mihomo` / `clash` |
 | `AIRPORT_DOMESTIC_DNS` | 国内 DNS，分号分隔 | `"223.5.5.5;119.29.29.29"` |
 | `AIRPORT_PROXY_DNS` | 国外 DNS（走代理），分号分隔 | `"https://1.1.1.1/dns-query;tls://8.8.8.8:853"` |
@@ -1267,7 +1267,7 @@ A：安装 `sshpass`，或使用密钥认证。也选择不自动执行，手动
 A：两者功能等价。ROS 更强大灵活（支持 comment 匹配批量删除）；爱快界面更友好。按你的主路由选择即可。
 
 **Q：fakeip 与 redir-host 怎么选？**
-A：`fakeip`（默认）更快、对代理友好；`redir-host` 保留真实 IP，适合需要真实 IP 的国内服务，见 `china-optimized` 机场。
+A：`fakeip`（默认）更快、对代理友好；`redir-host` 在 mihomo v1.19+ 已废弃，脚本会自动兜底为 `fake-ip`。如需保留真实 IP，建议直接在节点选择上走 DIRECT。
 
 ---
 
