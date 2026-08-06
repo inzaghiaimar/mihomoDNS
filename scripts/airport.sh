@@ -211,6 +211,12 @@ EOF
 # 配置文件名沿用 mosdns 官方约定的 config_custom.yaml；
 # mosdns start -d <dir> 默认找 config.yaml，因此 systemd unit 的 ExecStart
 # 需用 -c 显式指定 config_custom.yaml（见 install-mosdns.sh）。
+#
+# mosdns v0.7.x 配置要点（与旧版差异）：
+#   - 没有 type: server，拆成 udp_server + tcp_server 两个插件
+#   - forward 的 upstreams 项用 addr 字段（不是 upstream）
+#   - socks5 是 forward 的全局参数（Args 级，非每个 upstream 项）
+#   - sequence 的 exec 引用其他插件 tag 直接用 tag 名（不带 $ 前缀）
 generate_mosdns_config_for_airport() {
   local out="$MOSDNS_RUNTIME_DIR/config_custom.yaml"
   mkdir -p "$MOSDNS_RUNTIME_DIR"
@@ -221,24 +227,22 @@ generate_mosdns_config_for_airport() {
   proxy_dns="$(printf '%s' "$AIRPORT_PROXY_DNS" | tr ';' '\n' | grep -v '^$' || true)"
   [[ -z "$proxy_dns" ]] && proxy_dns="https://1.1.1.1/dns-query"
 
-  # 构造国内上游 yaml 片段（每项 8 空格缩进，置于 upstreams: 之下）
+  # 构造国内上游 yaml 片段：forward.upstreams[] 每项用 addr 字段
   local domestic_block="" i=0 line
   while IFS= read -r line; do
     [[ -z "$line" ]] && continue
     domestic_block+=$'        - tag: domestic_'"${i}"$'\n'
-    domestic_block+=$'          upstream:\n'
-    domestic_block+="          - \"${line}\""$'\n'
+    domestic_block+=$'          addr: '"\"${line}\""$'\n'
     i=$((i+1))
   done <<< "$domestic_dns"
 
   # 构造国外上游 yaml 片段：走 clash 的 SOCKS（mixed-port 兼容 socks5）
+  # socks5 是 forward 的全局参数，不是每个 upstream 项的参数。
   local proxy_block="" j=0
   while IFS= read -r line; do
     [[ -z "$line" ]] && continue
     proxy_block+=$'        - tag: proxy_'"${j}"$'\n'
-    proxy_block+=$'          upstream:\n'
-    proxy_block+="          - \"${line}\""$'\n'
-    proxy_block+="          socks5: \"127.0.0.1:${CLASH_MIXED_PORT}\""$'\n'
+    proxy_block+=$'          addr: '"\"${line}\""$'\n'
     j=$((j+1))
   done <<< "$proxy_dns"
 
@@ -260,19 +264,23 @@ log:
   file: "${MOSDNS_RUNTIME_DIR}/mosdns.log"
 
 plugins:
-  - tag: main_server
-    type: server
+  - tag: main_udp_server
+    type: udp_server
     args:
-      entry:
-        - main_sequence
+      entry: main_sequence
       listen: 127.0.0.1:${MOSDNS_DNS_PORT}
-      # WebUI 由 mosdns 内核监听 ${MOSDNS_WEBUI_PORT}（见启动参数）
+
+  - tag: main_tcp_server
+    type: tcp_server
+    args:
+      entry: main_sequence
+      listen: 127.0.0.1:${MOSDNS_DNS_PORT}
 
   - tag: main_sequence
     type: sequence
     args:
-      - exec: \$cache
-      - exec: \$forward_domestic
+      - exec: cache
+      - exec: forward_domestic
       # 如需把国外域名走代理上游，导入 config_all.zip 后，
       # 在此追加 matches+forward_proxy 规则（见 mosdns 文档）。
 
@@ -284,6 +292,7 @@ ${domestic_block}
   - tag: forward_proxy
     type: forward
     args:
+      socks5: "127.0.0.1:${CLASH_MIXED_PORT}"
       upstreams:
 ${proxy_block}
   - tag: cache
