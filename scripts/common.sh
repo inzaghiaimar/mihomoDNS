@@ -127,28 +127,40 @@ detect_os() {
 is_root() { [[ "${EUID:-$(id -u)}" -eq 0 ]]; }
 
 # ============ .env 加载 ============
+# 容错加载：旧版 .env 可能存在未加引号、含分号的值（如 DNS 列表），
+# 直接 source 会被当作多条命令执行而触发 set -e 退出。这里临时关闭
+# errexit 并抑制错误输出，坏行被跳过；随后 apply_airport_to_env 会用
+# set_env_value 以正确的带引号格式重写整个 .env，从而自愈。
 load_env() {
   local env_file="$PROJECT_DIR/.env"
-  if [[ -f "$env_file" ]]; then
-    set -a
-    # shellcheck disable=SC1090
-    source "$env_file"
-    set +a
-  fi
+  [[ -f "$env_file" ]] || return 0
+  local errexit_was_on=0
+  [[ $- == *e* ]] && errexit_was_on=1
+  set +e
+  set -a
+  # shellcheck disable=SC1090
+  source "$env_file" 2>/dev/null || true
+  set +a
+  [[ $errexit_was_on -eq 1 ]] && set -e
 }
 
 # 写入/更新 .env 中某个键
+# 值始终用双引号包裹，确保含 ; / : 等特殊字符的值（如 DNS 列表
+# "223.5.5.5;119.29.29.29"）在被 source 加载时不会被当作多条命令解析。
 set_env_value() {
   local key="$1" val="$2" env_file="$PROJECT_DIR/.env"
+  # 转义值中的反斜杠与双引号，避免破坏 .env 的双引号语法
+  local escaped="${val//\\/\\\\}"
+  escaped="${escaped//\"/\\\"}"
   touch "$env_file"
-  if grep -qE "^${key}=" "$env_file"; then
-    # macOS sed 与 GNU sed 兼容写法：用临时文件
-    local tmp
-    tmp="$(mktemp)"
-    sed -E "s|^${key}=.*|${key}=${val}|" "$env_file" > "$tmp" && mv "$tmp" "$env_file"
-  else
-    printf '%s=%s\n' "$key" "$val" >> "$env_file"
+  # 删除已有同名键（兼容旧的无引号写法），再追加带引号的新行；
+  # 用 grep -v + 追加代替 sed 替换，避免值中的 / & 等字符破坏 sed 替换串。
+  if [[ -s "$env_file" ]]; then
+    local tmp; tmp="$(mktemp)"
+    grep -vE "^${key}=" "$env_file" > "$tmp" 2>/dev/null || true
+    mv "$tmp" "$env_file"
   fi
+  printf '%s="%s"\n' "$key" "$escaped" >> "$env_file"
   export "$key=$val"
 }
 

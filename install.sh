@@ -273,6 +273,12 @@ preflight_checks() {
     info "请安装：apt-get install -y curl   或   apt-get install -y wget"
     return 1
   fi
+  # unzip：clash-for-linux 部署 Dashboard（dist.zip）需要，缺失则自动安装
+  if ! command -v unzip >/dev/null 2>&1; then
+    step "安装 unzip（clash-for-linux Dashboard 依赖）"
+    ensure_cmd unzip unzip
+    success "unzip 已就绪"
+  fi
   success "依赖命令检查通过"
 
   # 系统信息
