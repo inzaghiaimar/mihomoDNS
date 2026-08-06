@@ -2,7 +2,7 @@
 
 > clash-for-linux（代理） + mosdns（DNS 分流） 一键安装项目，按「机场」个性化配置
 >
-> 一个仓库即可在 Linux 上一键装好代理 + DNS 分流联动；内置 6 套机场预设，开箱即用。
+> 面向 **Linux** 一键装好代理 + DNS 分流联动；内置 6 套机场预设；支持与 **ROS（RouterOS）/ 爱快 iKuai** 主路由配合写入/删除静态路由。
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Linux-amd64%20%7C%20arm64%20%7C%20armv7-lightgrey.svg)]()
@@ -18,10 +18,13 @@
 - [快速开始](#快速开始)
 - [安装参数详解](#安装参数详解)
 - [机场个性化配置](#机场个性化配置)
-  - [内置预设](#内置预设)
-  - [字段说明](#字段说明)
-  - [新增自定义机场](#新增自定义机场)
-  - [完整配置示例](#完整配置示例)
+- [与 ROS / 爱快配合：静态路由表设置](#与-ros--爱快配合静态路由表设置)
+  - [场景说明](#场景说明)
+  - [Linux 本机静态路由](#linux-本机静态路由)
+  - [ROS / RouterOS 静态路由](#ros--routeros-静态路由)
+  - [爱快 iKuai 静态路由](#爱快-ikuai-静态路由)
+  - [路由参数一览](#路由参数一览)
+  - [删除静态路由](#删除静态路由)
 - [安装后使用](#安装后使用)
 - [卸载](#卸载)
 - [目录结构](#目录结构)
@@ -45,7 +48,7 @@
 - **mosdns** 有 DNS 智能分流能力，但需要外部代理（mihomo）提供 SOCKS 与 fakeip 上游。
 - 二者天然互补：**mosdns 做国内外 DNS 分流 → clash 做流量代理分流**，组合后既有干净的 DNS，又有稳定的代理。
 
-本项目把两个子项目源码 **vendored 打包进本仓库**（克隆本仓库即含完整源码，无需再拉取子项目），并按机场特征（协议、IPv6、流媒体、DNS 模式）自动生成各自的配置，让它们开箱联动。
+本仓库已将两个子项目源码 **vendored 打包**（克隆即完整），并按机场特征自动生成各自的配置，同时支持与 ROS / 爱快主路由配合写入/删除静态路由表。
 
 ---
 
@@ -53,7 +56,7 @@
 
 ```
 ┌──────────────────────────────────────────────────────────┐
-│                       宿主机                              │
+│                       Linux 宿主机                         │
 │                                                          │
 │   系统/应用 ──DNS查询──► mosdns(:5335)                    │
 │                           │                              │
@@ -66,6 +69,14 @@
 │                          │                              │
 │   clash(mihomo) 代理分流 ◄┘                              │
 │   WebUI: http://<IP>:9090/ui   mosdns WebUI: :9099      │
+└──────────────────────────────────────────────────────────┘
+          ▲                                    ▲
+          │ 客户端 DNS(53) 经主路由 DNAT 指向本机  │ 本机默认网关经主路由
+          │                                    │
+┌─────────┴────────────────────────────────────┴──────────┐
+│              ROS / 爱快 主路由（192.168.1.1）              │
+│  - NAT: 53 → 本机:5335（DNS 劫持）                        │
+│  - 静态路由: 代理网段 → 本机（旁路由回程）                 │
 └──────────────────────────────────────────────────────────┘
 ```
 
@@ -85,9 +96,9 @@
 
 | 项 | 要求 |
 | --- | --- |
-| 操作系统 | **Linux**（amd64 / arm64 / armv7）。macOS 仅支持 `--config-only` 生成配置 |
+| 操作系统 | **Linux**（amd64 / arm64 / armv7）。本项目仅面向 Linux |
 | 权限 | root 走 systemd 自启；普通用户走脚本（nohup）模式 |
-| 依赖命令 | `bash` ≥ 4、`tar`、`curl` 或 `wget`（二选一） |
+| 依赖命令 | `bash` ≥ 4、`tar`、`curl` 或 `wget`（二选一）、`ip`（路由功能用） |
 | 网络 | 能访问 GitHub（直连或经 `CLASH_GH_PROXY` 加速） |
 | 订阅 | 一个 clash/mihomo 格式的订阅链接 |
 
@@ -97,7 +108,7 @@
 
 ### 1. 克隆仓库
 
-本仓库已 vendored 子项目源码，**克隆即完整**，无需再拉取子项目：
+本仓库已 vendored 子项目源码，**克隆即完整**：
 
 ```bash
 git clone https://github.com/inzaghiaimar/mihomoDNS.git
@@ -119,22 +130,14 @@ bash install.sh --airport generic \
   --subscription-url "https://your-airport.example.com/api/v1/client/subscribe?token=xxx"
 ```
 
-Hysteria2 机场
+安装并同时写入 Linux 本机静态路由（旁路由场景）
 
 ```bash
-bash install.sh --airport hysteria2 \
-  --subscription-url "https://your-airport.example.com/sub"
-```
-
-装完不自动启动（仅安装二进制与配置）
-
-```bash
-bash install.sh --airport generic --subscription-url "https://..." --skip-start
+bash install.sh --airport generic --subscription-url "https://..." \
+  --route-target linux --route-gateway 192.168.1.1
 ```
 
 ### 3. 演练（推荐先跑一次）
-
-`--dry-run` 只打印将要执行的步骤，不实际安装，适合先确认配置是否符合预期：
 
 ```bash
 bash install.sh --dry-run --airport streaming --subscription-url "https://..."
@@ -152,83 +155,46 @@ bash install.sh [选项]
   --subscription-url <url>     订阅链接（覆盖机场预设里的订阅）
   --only <clash|mosdns>        只安装其中一个组件
   --skip-start                 仅安装，不自动启动服务
-  --config-only                仅生成配置（机场/.env/mixin/mosdns），不下载二进制
+  --config-only                仅生成配置，不下载二进制
   --dry-run                    演练模式，只打印将要执行的步骤，不实际改动
   -v, --verbose                详细日志（打印执行的每条命令）
   --log-file <path>            指定日志文件路径（默认 runtime/install-<时间>.log）
   --no-color                   关闭彩色输出
   --skip-network-check         跳过 GitHub 连通性预检
   --list-airports              列出可选机场预设后退出
+
+  --route-target <linux|ros|ikuai>  安装后写入静态路由（Linux本机/ROS/爱快）
+  --route-clean                删除已写入的静态路由（配合 --route-target）
+  --route-gateway <ip>         主路由 LAN IP（如 192.168.1.1）
+  --route-lan-ip <ip>          本机 LAN IP（如 192.168.1.2）
+  --route-lan-if <if>          本机网卡（如 eth0，linux 目标可自动探测）
+  --route-lan-cidr <cidr>      本机网段（如 192.168.1.0/24）
+  --route-ssh-host <ip>        ROS SSH 主机（ros 目标用）
+  --route-ssh-port <port>      SSH 端口（默认 22）
+  --route-ssh-user <user>      SSH 用户（默认 admin）
+  --route-ikuai-host <ip>      爱快后台地址（ikuai 目标用）
+  --route-ikuai-user <user>    爱快 SSH 用户（默认 admin）
   -h, --help                   显示帮助
 ```
-
-### 常用组合
-
-```bash
-# 列出可选机场
-bash install.sh --list-airports
-
-# 只装 mosdns（clash 已装好）
-bash install.sh --only mosdns --airport generic --subscription-url "https://..."
-
-# 详细日志 + 指定日志文件（排查问题用）
-bash install.sh -v --log-file /tmp/mihomo-install.log --airport generic --subscription-url "https://..."
-
-# 仅生成配置，不下载二进制（macOS 或只想看配置）
-bash install.sh --config-only --airport streaming
-```
-
-### 安装流程
-
-`install.sh` 会依次执行（每步有计时与错误捕获）：
-
-1. **前置检查** — 依赖命令、系统架构、GitHub 连通性
-2. **子项目就位检查** — vendored 已含则跳过；缺失则自动从上游克隆
-3. **选择机场** — `--airport` > `.env` > 交互式
-4. **生成配置** — `.env` / `clash-for-linux/config/mixin.yaml` / `runtime/mosdns/config_custom.yaml`
-5. **安装 clash** — 调用 clash-for-linux 的 `install.sh`
-6. **安装 mosdns** — 下载 release 二进制 + 写入 systemd unit
-7. **启动 & 联动检查** — clash / mosdns 启动，端口健康检查
 
 ---
 
 ## 机场个性化配置
 
-「机场」指订阅服务提供方。不同机场在协议、IPv6 支持、DNS 需求、流媒体规则等方面存在差异。`airports/` 目录为每类机场提供一套预设配置，安装时 `--airport <name>` 选择即可。
+「机场」指订阅服务提供方。不同机场在协议、IPv6 支持、DNS 需求、流媒体规则等方面存在差异。`airports/` 目录为每类机场提供一套预设配置。
 
 ### 内置预设
 
 | 机场 | 文件 | 适用场景 | 关键差异 |
 | --- | --- | --- | --- |
-| `default` | [default.conf](airports/default.conf) | 模板 | 占位，填订阅即用 |
-| `generic` | [generic.conf](airports/generic.conf) | 标准协议机场 | vmess/vless/trojan，fakeip，IPv6 auto |
-| `hysteria2` | [hysteria2.conf](airports/hysteria2.conf) | Hy2 机场 | mihomo 内核，需 UDP 放行 |
-| `ipv6-only` | [ipv6-only.conf](airports/ipv6-only.conf) | IPv6-only 节点 | 内核 IPv6 + DNS AAAA 开 |
-| `streaming` | [streaming.conf](airports/streaming.conf) | 流媒体机场 | 内置 Netflix/Disney+/YouTube 规则 |
-| `china-optimized` | [china-optimized.conf](airports/china-optimized.conf) | 国内优化 | redir-host 模式，IPv6 off |
-
-### 字段说明
-
-每个 `airports/<name>.conf` 以 shell 变量定义以下字段：
-
-| 字段 | 说明 | 示例 |
-| --- | --- | --- |
-| `AIRPORT_NAME` | 机场显示名 | `"流媒体优化机场"` |
-| `AIRPORT_SUBSCRIPTION_URL` | 订阅链接（clash/mihomo YAML、base64 或分享链接均可） | `"https://..."` |
-| `AIRPORT_SUBSCRIPTION_UA` | 拉取订阅时的 User-Agent（默认 `clash-verge/v2.4.0`，兼容 hy2/anytls） | `"clash-verge/v2.4.0"` |
-| `AIRPORT_IPV6` | 是否启用内核 IPv6 与 DNS AAAA | `auto` / `on` / `off` |
-| `AIRPORT_DNS_MODE` | clash DNS 增强模式 | `fakeip` / `redir-host` |
-| `AIRPORT_KERNEL` | 代理内核 | `mihomo` / `clash` |
-| `AIRPORT_DOMESTIC_DNS` | 国内 DNS，分号分隔 | `"223.5.5.5;119.29.29.29"` |
-| `AIRPORT_PROXY_DNS` | 国外 DNS（走代理），分号分隔 | `"https://1.1.1.1/dns-query;tls://8.8.8.8:853"` |
-| `AIRPORT_RULES_EXTRA` | 额外规则（YAML 数组文本，追加到 rules 前） | 见 streaming 示例 |
-| `AIRPORT_PROXY_GROUPS_EXTRA` | 额外策略组（YAML 文本） | — |
-| `AIRPORT_TUN` | 是否启用 Tun 透明代理（需 root） | `true` / `false` |
-| `AIRPORT_NOTES` | 备注 | — |
+| `default` | [airports/default.conf](airports/default.conf) | 模板 | 占位，填订阅即用 |
+| `generic` | [airports/generic.conf](airports/generic.conf) | 标准协议机场 | vmess/vless/trojan，fakeip，IPv6 auto |
+| `hysteria2` | [airports/hysteria2.conf](airports/hysteria2.conf) | Hy2 机场 | mihomo 内核，需 UDP 放行 |
+| `ipv6-only` | [airports/ipv6-only.conf](airports/ipv6-only.conf) | IPv6-only 节点 | 内核 IPv6 + DNS AAAA 开 |
+| `streaming` | [airports/streaming.conf](airports/streaming.conf) | 流媒体机场 | 内置 Netflix/Disney+/YouTube 规则 |
+| `china-optimized` | [airports/china-optimized.conf](airports/china-optimized.conf) | 国内优化 | redir-host 模式，IPv6 off |
 
 ### 新增自定义机场
-
-复制任一预设并修改：
 
 ```bash
 cp airports/generic.conf airports/myairport.conf
@@ -236,75 +202,304 @@ cp airports/generic.conf airports/myairport.conf
 bash install.sh --airport myairport
 ```
 
-### 完整配置示例
+### 字段说明
 
-#### 示例 1：流媒体优化机场（streaming.conf）
+| 字段 | 说明 | 示例 |
+| --- | --- | --- |
+| `AIRPORT_NAME` | 机场显示名 | `"流媒体优化机场"` |
+| `AIRPORT_SUBSCRIPTION_URL` | 订阅链接 | `"https://..."` |
+| `AIRPORT_IPV6` | 是否启用内核 IPv6 与 DNS AAAA | `auto` / `on` / `off` |
+| `AIRPORT_DNS_MODE` | clash DNS 增强模式 | `fakeip` / `redir-host` |
+| `AIRPORT_KERNEL` | 代理内核 | `mihomo` / `clash` |
+| `AIRPORT_DOMESTIC_DNS` | 国内 DNS，分号分隔 | `"223.5.5.5;119.29.29.29"` |
+| `AIRPORT_PROXY_DNS` | 国外 DNS（走代理），分号分隔 | `"https://1.1.1.1/dns-query;tls://8.8.8.8:853"` |
+| `AIRPORT_RULES_EXTRA` | 额外规则（追加到 rules 前） | 见 streaming 示例 |
+| `AIRPORT_TUN` | 是否启用 Tun 透明代理（需 root） | `true` / `false` |
 
-```bash
-AIRPORT_NAME="流媒体优化机场"
-AIRPORT_SUBSCRIPTION_URL=""
-AIRPORT_SUBSCRIPTION_UA="clash-verge/v2.4.0"
-AIRPORT_IPV6="auto"
-AIRPORT_DNS_MODE="fakeip"
-AIRPORT_KERNEL="mihomo"
-AIRPORT_DOMESTIC_DNS="223.5.5.5;119.29.29.29"
-AIRPORT_PROXY_DNS="https://1.1.1.1/dns-query;tls://8.8.8.8:853"
-AIRPORT_RULES_EXTRA='    - DOMAIN-SUFFIX,netflix.com,节点选择
-    - DOMAIN-SUFFIX,nflxvideo.net,节点选择
-    - DOMAIN-SUFFIX,disneyplus.com,节点选择
-    - DOMAIN-SUFFIX,hbomax.com,节点选择
-    - DOMAIN-SUFFIX,primevideo.com,节点选择
-    - DOMAIN-SUFFIX,youtube.com,节点选择
-    - DOMAIN-SUFFIX,googlevideo.com,节点选择
-    - DOMAIN-KEYWORD,spotify,节点选择
-    - DOMAIN-SUFFIX,hulu.com,节点选择'
-AIRPORT_PROXY_GROUPS_EXTRA=""
-AIRPORT_TUN="false"
-AIRPORT_NOTES="流媒体：内置 Netflix/Disney+/HBO/YouTube 等走代理规则。"
+---
+
+## 与 ROS / 爱快配合：静态路由表设置
+
+本项目的 Linux 宿主机通常作为**旁路由 / DNS 服务器**部署，主路由是 ROS（RouterOS）或爱快 iKuai。为了让客户端的 DNS 查询自动到达本机 mosdns，以及让本机的出网流量正确经主路由，需要在主路由上写入静态路由 / NAT 规则。
+
+`scripts/route.sh` 脚本封装了这一过程，支持三种目标：`linux`（本机）、`ros`（RouterOS）、`ikuai`（爱快）。
+
+### 场景说明
+
+```
+                        ┌─────────────────────────┐
+                        │   ROS / 爱快 主路由       │
+                        │   LAN: 192.168.1.1       │
+                        └────────┬────────────────┘
+                                 │
+              ┌──────────────────┼──────────────────┐
+              │                  │                  │
+     ┌────────┴───────┐  ┌───────┴───────┐  ┌───────┴───────┐
+     │  客户端 A       │  │  客户端 B      │  │ mihomoDNS 宿主机│
+     │  192.168.1.10  │  │  192.168.1.11 │  │ 192.168.1.2    │
+     │  DNS → 主路由   │  │  DNS → 主路由  │  │ mosdns:5335    │
+     └────────────────┘  └───────────────┘  │ clash:7890     │
+                                            └────────────────┘
 ```
 
-#### 示例 2：IPv6-only 机场（ipv6-only.conf）
+- **DNS 劫持**：主路由把客户端发往 53 端口的流量 DNAT 到 `192.168.1.2:5335`（mosdns）
+- **旁路由回程**（可选）：主路由把需要走代理的网段路由到 `192.168.1.2`
+- **本机默认网关**：mihomoDNS 宿主机的默认网关指向主路由 `192.168.1.1`
+
+### Linux 本机静态路由
+
+适用于 mihomoDNS 宿主机本身需要设置默认网关、关闭 rp_filter、开启 IP 转发的场景。
+
+#### 一键写入
 
 ```bash
-AIRPORT_NAME="IPv6-only 机场"
-AIRPORT_SUBSCRIPTION_URL=""
-AIRPORT_SUBSCRIPTION_UA="clash-verge/v2.4.0"
-AIRPORT_IPV6="on"                    # 开启内核 IPv6 与 DNS AAAA
-AIRPORT_DNS_MODE="fakeip"
-AIRPORT_KERNEL="mihomo"
-AIRPORT_DOMESTIC_DNS="2402:4e00::;2001:4860:4860::8888"   # IPv6 DNS
-AIRPORT_PROXY_DNS="https://1.1.1.1/dns-query;tls://8.8.8.8:853"
-AIRPORT_RULES_EXTRA=""
-AIRPORT_PROXY_GROUPS_EXTRA=""
-AIRPORT_TUN="false"
-AIRPORT_NOTES="IPv6-only：内核 IPv6 与 DNS AAAA 已开启；请确认宿主机 IPv6 默认路由可用。"
+# 自动探测网卡与本机 IP
+bash install.sh --airport generic --subscription-url "https://..." \
+  --route-target linux --route-gateway 192.168.1.1
+
+# 或手动指定全部参数
+bash scripts/route.sh apply \
+  --target linux \
+  --gateway 192.168.1.1 \
+  --lan-if eth0 \
+  --lan-ip 192.168.1.2 \
+  --lan-cidr 192.168.1.0/24
 ```
 
-#### 示例 3：国内优化机场（china-optimized.conf）
+#### 实际执行的命令
+
+脚本会在本机执行：
 
 ```bash
-AIRPORT_NAME="国内优化机场"
-AIRPORT_SUBSCRIPTION_URL=""
-AIRPORT_SUBSCRIPTION_UA="clash-verge/v2.4.0"
-AIRPORT_IPV6="off"                   # 关闭 IPv6
-AIRPORT_DNS_MODE="redir-host"        # 保留真实 IP（非 fakeip）
-AIRPORT_KERNEL="mihomo"
-AIRPORT_DOMESTIC_DNS="223.5.5.5;119.29.29.29;114.114.114.114"
-AIRPORT_PROXY_DNS="https://1.1.1.1/dns-query;tls://8.8.8.8:853"
-AIRPORT_RULES_EXTRA=""
-AIRPORT_PROXY_GROUPS_EXTRA=""
-AIRPORT_TUN="false"
-AIRPORT_NOTES="国内优化：redir-host 模式保留真实 IP，IPv6 关闭，国内 DNS 含 114。"
+# 1) 设置默认网关经主路由
+ip route replace default via 192.168.1.1 dev eth0
+
+# 2) 关闭 rp_filter（旁路由防丢包）
+sysctl -w net.ipv4.conf.all.rp_filter=0
+sysctl -w net.ipv4.conf.default.rp_filter=0
+sysctl -w net.ipv4.conf.eth0.rp_filter=0
+
+# 3) 开启 IP 转发
+sysctl -w net.ipv4.ip_forward=1
+
+# 4) 持久化到 /etc/sysctl.d/99-mihomoDNS.conf
+cat > /etc/sysctl.d/99-mihomoDNS.conf <<EOF
+net.ipv4.conf.all.rp_filter=0
+net.ipv4.conf.default.rp_filter=0
+net.ipv4.ip_forward=1
+EOF
+sysctl -p /etc/sysctl.d/99-mihomoDNS.conf
 ```
 
-### 配置如何生效
+#### 删除
 
-安装时，[scripts/airport.sh](scripts/airport.sh) 会：
+```bash
+bash scripts/route.sh clean --target linux
+# 会删除 /etc/sysctl.d/99-mihomoDNS.conf
+# 默认网关与 rp_filter 需手动恢复（脚本不擅自改回，避免断网）
+```
 
-1. 加载 `airports/<name>.conf`
-2. 把订阅、UA、IPv6、端口等写入 `.env`（供 clash-for-linux 读取）
-3. 按机场特征生成 `clash-for-linux/config/mixin.yaml`（DNS、IPv6、规则覆盖）
-4. 按国内/国外 DNS 与 SOCKS 端口生成 `runtime/mosdns/config_custom.yaml`
+---
+
+### ROS / RouterOS 静态路由
+
+适用于主路由为 MikroTik RouterOS / ROS 软路由的场景。脚本生成 ROS CLI 命令，可选经 SSH 自动执行。
+
+#### 一键生成并执行
+
+```bash
+# 经 install.sh（安装后自动生成 ROS 命令）
+bash install.sh --airport generic --subscription-url "https://..." \
+  --route-target ros \
+  --route-lan-ip 192.168.1.2 \
+  --route-ssh-host 192.168.1.1
+
+# 或单独调用 route.sh
+bash scripts/route.sh apply \
+  --target ros \
+  --lan-ip 192.168.1.2 \
+  --ssh-host 192.168.1.1
+```
+
+#### 生成的 ROS CLI 命令（写入）
+
+在 ROS 主路由执行以下命令，作用是把客户端 DNS(53) 流量自动指向本机 mosdns(:5335)：
+
+```routeros
+# 1) DNS 劫持：UDP 53 → 本机 5335
+/ip firewall nat add chain=dstnat protocol=udp dst-port=53 \
+    action=dst-nat to-addresses=192.168.1.2 to-ports=5335 \
+    comment="mihomoDNS-udp"
+
+# 2) DNS 劫持：TCP 53 → 本机 5335
+/ip firewall nat add chain=dstnat protocol=tcp dst-port=53 \
+    action=dst-nat to-addresses=192.168.1.2 to-ports=5335 \
+    comment="mihomoDNS-tcp"
+
+# 3) 旁路由回程（按需）：把需要走代理的网段指向本机
+/ip route add dst-address=192.168.1.0/24 gateway=192.168.1.2 \
+    comment="mihomoDNS-route"
+
+# 4) 若需把特定客户端全部流量经本机代理
+/ip route add dst-address=192.168.1.10/32 gateway=192.168.1.2
+```
+
+#### 生成的 ROS CLI 命令（删除）
+
+```routeros
+# 1) 删除 DNS 劫持 NAT 规则（按 comment 匹配）
+/ip firewall nat remove [find comment~"mihomoDNS"]
+
+# 2) 删除回程静态路由
+/ip route remove [find comment="mihomoDNS-route"]
+
+# 验证
+/ip firewall nat print
+/ip route print
+```
+
+#### SSH 自动执行
+
+若提供了 `--route-ssh-host`，脚本会询问是否经 SSH 自动执行。需要 `sshpass`（否则交互输入密码）：
+
+```bash
+# 安装 sshpass（Ubuntu/Debian）
+apt-get install -y sshpass
+
+# 自动执行（SSH 密码通过环境变量 SSHPASS 传入）
+SSHPASS=your_password bash scripts/route.sh apply \
+  --target ros \
+  --lan-ip 192.168.1.2 \
+  --ssh-host 192.168.1.1 \
+  --ssh-user admin
+```
+
+#### ROS WebFig / WinBox 手动操作
+
+若不便用 SSH，也可在 ROS 管理界面手动添加：
+
+1. **DNS 劫持（NAT）**：`IP` → `Firewall` → `NAT` → `+`
+   - `Chain`: dstnat
+   - `Protocol`: 6 (tcp) 或 17 (udp)
+   - `Dst. Port`: 53
+   - `Action`: dst-nat
+   - `To Addresses`: 192.168.1.2
+   - `To Ports`: 5335
+
+2. **静态路由**：`IP` → `Routes` → `+`
+   - `Dst. Address`: 192.168.1.0/24（或客户端 IP/32）
+   - `Gateway`: 192.168.1.2
+
+---
+
+### 爱快 iKuai 静态路由
+
+适用于主路由为爱快 iKuai 软路由的场景。脚本生成 Web 后台操作步骤与 SSH 命令。
+
+#### 一键生成
+
+```bash
+# 经 install.sh
+bash install.sh --airport generic --subscription-url "https://..." \
+  --route-target ikuai \
+  --route-lan-ip 192.168.1.2 \
+  --route-ikuai-host 192.168.1.1
+
+# 或单独调用 route.sh
+bash scripts/route.sh apply \
+  --target ikuai \
+  --lan-ip 192.168.1.2 \
+  --ikuai-host 192.168.1.1
+```
+
+#### 方式 A：爱快 Web 后台手动操作
+
+1. **DNS 劫持（端口映射）**：
+   - `流控分流` → `端口映射` → `添加`
+   - 协议: `UDP`，外部端口: `53`，内部 IP: `192.168.1.2`，内部端口: `5335`
+   - 再添加一条 `TCP` / `53` → `192.168.1.2:5335`
+
+2. **静态路由（旁路由回程，可选）**：
+   - `网络设置` → `路由设置` → `静态路由` → `添加`
+   - 目标网段: `192.168.1.0/24`，网关: `192.168.1.2`
+
+3. **特定客户端全流量经本机（可选）**：
+   - 目标网段填客户端 IP/32，网关填 `192.168.1.2`
+
+#### 方式 B：经 SSH 执行（爱快基于 OpenWrt，支持 iptables）
+
+```bash
+ssh root@192.168.1.1
+
+# DNS 劫持
+iptables -t nat -A PREROUTING -p udp --dport 53 \
+    -j DNAT --to-destination 192.168.1.2:5335
+iptables -t nat -A PREROUTING -p tcp --dport 53 \
+    -j DNAT --to-destination 192.168.1.2:5335
+
+# 静态路由（旁路由回程）
+ip route add 192.168.1.0/24 via 192.168.1.2
+```
+
+#### 删除
+
+```bash
+# Web 后台
+# 流控分流 → 端口映射 → 删除 53 → 192.168.1.2:5335 的规则
+# 网络设置 → 路由设置 → 静态路由 → 删除网关为 192.168.1.2 的条目
+
+# SSH
+iptables -t nat -D PREROUTING -p udp --dport 53 \
+    -j DNAT --to-destination 192.168.1.2:5335
+iptables -t nat -D PREROUTING -p tcp --dport 53 \
+    -j DNAT --to-destination 192.168.1.2:5335
+ip route del 192.168.1.0/24 via 192.168.1.2
+```
+
+或用脚本：
+
+```bash
+bash scripts/route.sh clean --target ikuai --lan-ip 192.168.1.2 --ikuai-host 192.168.1.1
+```
+
+---
+
+### 路由参数一览
+
+| 参数 | 环境变量 | 适用目标 | 说明 |
+| --- | --- | --- | --- |
+| `--route-target` | `ROUTE_TARGET` | 所有 | `linux` / `ros` / `ikuai` |
+| `--route-gateway` | `ROUTE_GATEWAY` | linux | 主路由 LAN IP（默认网关） |
+| `--route-lan-if` | `ROUTE_LAN_IF` | linux | 本机网卡（可自动探测） |
+| `--route-lan-ip` | `ROUTE_LAN_IP` | ros/ikuai | 本机 LAN IP（DNAT 目标） |
+| `--route-lan-cidr` | `ROUTE_LAN_CIDR` | ros/ikuai | 本机网段（旁路由回程路由） |
+| `--route-ssh-host` | `ROUTE_SSH_HOST` | ros | ROS SSH 主机 |
+| `--route-ssh-port` | `ROUTE_SSH_PORT` | ros | SSH 端口（默认 22） |
+| `--route-ssh-user` | `ROUTE_SSH_USER` | ros | SSH 用户（默认 admin） |
+| `--route-ikuai-host` | `ROUTE_IKUAI_HOST` | ikuai | 爱快后台地址 |
+| `--route-ikuai-user` | `ROUTE_IKUAI_USER` | ikuai | 爱快 SSH 用户（默认 admin） |
+
+> 这些参数也可写在 `.env` 文件中，见 `.env.example` 的「静态路由」部分。
+
+### 删除静态路由
+
+所有目标都支持 `clean` 子命令或 `--route-clean` 参数：
+
+```bash
+# 删除 Linux 本机路由
+bash scripts/route.sh clean --target linux
+
+# 删除 ROS 路由（生成删除命令）
+bash scripts/route.sh clean --target ros --lan-ip 192.168.1.2 --ssh-host 192.168.1.1
+
+# 删除爱快路由（生成删除命令）
+bash scripts/route.sh clean --target ikuai --lan-ip 192.168.1.2 --ikuai-host 192.168.1.1
+
+# 经 install.sh 删除
+bash install.sh --route-target ros --route-clean --route-lan-ip 192.168.1.2 --route-ssh-host 192.168.1.1
+```
+
+> **注意**：Linux 目标删除时只清理本项目写入的 `/etc/sysctl.d/99-mihomoDNS.conf`，不擅自改回默认网关与 rp_filter，避免断网。请按提示手动恢复。
 
 ---
 
@@ -313,23 +508,20 @@ AIRPORT_NOTES="国内优化：redir-host 模式保留真实 IP，IPv6 关闭，�
 ### clash 管理
 
 ```bash
-clashon              # 开启代理（设置系统代理环境变量）
+clashon              # 开启代理
 clashoff             # 关闭代理
 clash                # 进入 clash 管理面板
-clash ls             # 订阅列表
 clash select         # 选择节点
 clash mode           # 切换规则/全局/直连模式
-clash mixin edit     # 编辑 mixin 重新生成运行配置
 clash doctor         # 诊断
 ```
 
 ### mosdns 管理（systemd 安装时）
 
 ```bash
-systemctl status mosdns       # 状态
-systemctl restart mosdns      # 重启
-systemctl stop mosdns         # 停止
-journalctl -u mosdns -f       # 实时日志
+systemctl status mosdns
+systemctl restart mosdns
+journalctl -u mosdns -f
 ```
 
 ### WebUI
@@ -364,14 +556,9 @@ bash scripts/integrate.sh check
 ## 卸载
 
 ```bash
-# 保留运行目录
-bash uninstall.sh
-
-# 连运行目录一起删
-bash uninstall.sh --purge-runtime -y
-
-# 跳过确认
-bash uninstall.sh -y
+bash uninstall.sh                     # 保留运行目录
+bash uninstall.sh --purge-runtime -y  # 连运行目录一起删
+bash uninstall.sh -y                  # 跳过确认
 ```
 
 ---
@@ -382,72 +569,66 @@ bash uninstall.sh -y
 mihomoDNS/
 ├── install.sh                 # 一键安装入口
 ├── uninstall.sh               # 卸载
-├── .env.example               # 环境变量示例
-├── airports/                  # 机场个性化配置
-│   ├── README.md
-│   ├── default.conf
-│   ├── generic.conf
-│   ├── hysteria2.conf
-│   ├── ipv6-only.conf
-│   ├── streaming.conf
-│   └── china-optimized.conf
+├── .env.example               # 环境变量示例（含路由参数）
+├── airports/                  # 机场个性化配置（6 套预设）
 ├── config/                    # 配置参考模板
-│   ├── clash-template.yaml
-│   └── mosdns-config.yaml
-├── scripts/                   # 安装与联动逻辑
-│   ├── common.sh              # 通用函数（日志、架构、下载、错误处理）
+├── scripts/
+│   ├── common.sh              # 通用函数（日志、下载、错误处理）
 │   ├── airport.sh             # 机场加载与配置生成
 │   ├── install-clash.sh       # 安装 clash-for-linux
 │   ├── install-mosdns.sh      # 下载安装 mosdns
-│   └── integrate.sh           # 联动启动与健康检查
-├── clash-for-linux/           # vendored 子项目：clash/mihomo 管理
-└── mosdns/                    # vendored 子项目：DNS 分流
+│   ├── integrate.sh           # 联动启动与健康检查
+│   └── route.sh               # 静态路由写入/删除（ros/ikuai/linux）
+├── clash-for-linux/           # vendored 子项目
+└── mosdns/                    # vendored 子项目
 ```
-
-> `runtime/` 目录在安装时自动生成，含 mosdns 配置/日志，已在 `.gitignore` 中忽略。
 
 ---
 
 ## 常见问题
 
 **Q：mosdns 国外 DNS 为什么要走 clash 的 SOCKS？**
-A：避免 DNS 泄露与污染。mosdns 把国外域名查询经 `127.0.0.1:7890`（clash mixed-port）转发到国外 DoH/DoT，结果由 clash 代理通道获取，不会被中间设备污染或看到明文 DNS。
+A：避免 DNS 泄露与污染。mosdns 把国外域名查询经 `127.0.0.1:7890` 转发到国外 DoH/DoT，结果由 clash 代理通道获取，不会被中间设备污染。
+
+**Q：ROS/爱快上为什么要把 53 端口 DNAT 到 5335？**
+A：mosdns 默认监听 5335（非 root 无法绑 53）。在主路由上做 DNAT，客户端无需任何设置，DNS 查询自动到达 mosdns。
+
+**Q：旁路由模式下本机需要什么配置？**
+A：① 默认网关指向主路由；② 关闭 rp_filter；③ 开启 ip_forward。`--route-target linux` 一键完成。
+
+**Q：ROS SSH 自动执行失败？**
+A：安装 `sshpass`，或使用密钥认证。也选择不自动执行，手动复制命令到 ROS 后台。
+
+**Q：爱快与 ROS 选哪个？**
+A：两者功能等价。ROS 更强大灵活（支持 comment 匹配批量删除）；爱快界面更友好。按你的主路由选择即可。
 
 **Q：fakeip 与 redir-host 怎么选？**
-A：`fakeip`（默认）更快、对代理友好，mosdns 把代理域名指向 clash 的 fakeip 段；`redir-host` 保留真实 IP，适合需要真实 IP 的国内服务（如部分 CDN、登录态），见 `china-optimized` 机场。
-
-**Q：Hysteria2 节点连不上？**
-A：确认 `AIRPORT_KERNEL=mihomo`、宿主机有 IPv6 默认路由（IPv6-only 时）、防火墙放行 UDP/QUIC。
-
-**Q：mosdns 监听 5335 而不是 53？**
-A：非 root 无法绑 53。如需让系统 DNS 走 mosdns，见[安装后使用](#安装后使用)的「让系统 DNS 走 mosdns」。
-
-**Q：GitHub 下载慢/失败？**
-A：脚本默认用 `CLASH_GH_PROXY=https://ghfast.top` 加速。可在 `.env` 改为其他镜像（`https://gh-proxy.org`、`https://ghproxy.net`、`https://kkgithub.com`），或 `--skip-network-check` 跳过预检。
-
-**Q：能只装其中一个吗？**
-A：能。`bash install.sh --only clash` 或 `--only mosdns`。
+A：`fakeip`（默认）更快、对代理友好；`redir-host` 保留真实 IP，适合需要真实 IP 的国内服务，见 `china-optimized` 机场。
 
 ---
 
 ## 故障排查与日志
 
-安装日志默认写入 `runtime/install-<时间>.log`，包含每步的开始/完成/耗时与错误。
-
 ```bash
 # 查看最近一次安装日志
 ls -t runtime/install-*.log | head -1 | xargs tail -50
 
-# 详细模式重装（打印每条命令）
+# 详细模式重装
 bash install.sh -v --log-file /tmp/debug.log --airport generic --subscription-url "https://..."
 
 # dry-run 演练
 bash install.sh --dry-run --airport streaming
 
+# 验证路由是否生效
+ip route show
+ip -4 addr show
+sysctl net.ipv4.ip_forward
+sysctl net.ipv4.conf.all.rp_filter
+
 # clash 诊断
 clash doctor
 
-# mosdns 日志（systemd）
+# mosdns 日志
 journalctl -u mosdns -n 100
 ```
 
@@ -467,7 +648,7 @@ journalctl -u mosdns -n 100
 ## 上游项目致谢
 
 - [wnlen/clash-for-linux](https://github.com/wnlen/clash-for-linux) — Linux Clash/Mihomo 运行平台
-- [jasonxtt/mosdns](https://github.com/jasonxtt/mosdns) — DNS 分流增强版（基于 yyysuo/mosdns）
+- [jasonxtt/mosdns](https://github.com/jasonxtt/mosdns) — DNS 分流增强版
 
 本仓库已将上述两个项目的源码 vendored 打包，安装时无需再从外部拉取。
 

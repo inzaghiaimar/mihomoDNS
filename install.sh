@@ -32,6 +32,8 @@ source "$PROJECT_DIR/scripts/install-clash.sh"
 source "$PROJECT_DIR/scripts/install-mosdns.sh"
 # shellcheck source=scripts/integrate.sh
 source "$PROJECT_DIR/scripts/integrate.sh"
+# shellcheck source=scripts/route.sh
+source "$PROJECT_DIR/scripts/route.sh"
 
 # ============ 参数解析 ============
 ARG_AIRPORT=""
@@ -46,6 +48,14 @@ ARG_VERBOSE=false
 ARG_LOG_FILE=""
 ARG_NO_COLOR=false
 ARG_SKIP_NETWORK=false
+ARG_ROUTE_TARGET=""
+ARG_ROUTE_CLEAN=false
+ARG_ROUTE_GATEWAY=""
+ARG_ROUTE_LAN_IP=""
+ARG_ROUTE_LAN_IF=""
+ARG_ROUTE_LAN_CIDR=""
+ARG_ROUTE_SSH_HOST=""
+ARG_ROUTE_IKUAI_HOST=""
 
 print_usage() {
   cat <<EOF
@@ -66,6 +76,14 @@ mihomoDNS 一键安装（clash-for-linux + mosdns）
   --no-color                   关闭彩色输出
   --skip-network-check         跳过 GitHub 连通性预检
   --list-airports              列出可选机场预设后退出
+  --route-target <linux|ros|ikuai>  安装后写入静态路由（Linux本机/ROS/爱快）
+  --route-clean                删除已写入的静态路由（配合 --route-target）
+  --route-gateway <ip>         主路由 LAN IP（如 192.168.1.1）
+  --route-lan-ip <ip>          本机 LAN IP（如 192.168.1.2）
+  --route-lan-if <if>          本机网卡（如 eth0，linux 目标可自动探测）
+  --route-lan-cidr <cidr>      本机网段（如 192.168.1.0/24）
+  --route-ssh-host <ip>        ROS SSH 主机（ros 目标用）
+  --route-ikuai-host <ip>      爱快后台地址（ikuai 目标用）
   -h, --help                   显示帮助
 
 示例:
@@ -73,6 +91,9 @@ mihomoDNS 一键安装（clash-for-linux + mosdns）
   bash install.sh --airport hysteria2
   bash install.sh --dry-run --airport streaming
   bash install.sh -v --log-file /tmp/mihomo.log
+  bash install.sh --route-target linux --route-gateway 192.168.1.1
+  bash install.sh --route-target ros --route-lan-ip 192.168.1.2 --route-ssh-host 192.168.1.1
+  bash install.sh --route-target ikuai --route-clean
 EOF
 }
 
@@ -89,6 +110,17 @@ while [[ $# -gt 0 ]]; do
     --no-color) ARG_NO_COLOR=true; shift ;;
     --skip-network-check) ARG_SKIP_NETWORK=true; shift ;;
     --list-airports) ARG_LIST_AIRPORTS=true; shift ;;
+    --route-target) ARG_ROUTE_TARGET="$2"; shift 2 ;;
+    --route-clean) ARG_ROUTE_CLEAN=true; shift ;;
+    --route-gateway) ARG_ROUTE_GATEWAY="$2"; shift 2 ;;
+    --route-lan-ip) ARG_ROUTE_LAN_IP="$2"; shift 2 ;;
+    --route-lan-if) ARG_ROUTE_LAN_IF="$2"; shift 2 ;;
+    --route-lan-cidr) ARG_ROUTE_LAN_CIDR="$2"; shift 2 ;;
+    --route-ssh-host) ARG_ROUTE_SSH_HOST="$2"; shift 2 ;;
+    --route-ssh-port) ROUTE_SSH_PORT="$2"; shift 2 ;;
+    --route-ssh-user) ROUTE_SSH_USER="$2"; shift 2 ;;
+    --route-ikuai-host) ARG_ROUTE_IKUAI_HOST="$2"; shift 2 ;;
+    --route-ikuai-user) ROUTE_IKUAI_USER="$2"; shift 2 ;;
     -h|--help) ARG_HELP=true; shift ;;
     *) error "未知参数：$1"; print_usage >&2; exit 1 ;;
   esac
@@ -196,6 +228,16 @@ main() {
     fi
   fi
 
+  # 10) 静态路由（与 ROS / 爱快 / Linux 主路由配合）
+  if [[ -n "$ARG_ROUTE_TARGET" ]]; then
+    apply_route_args_to_env
+    if $ARG_ROUTE_CLEAN; then
+      run_step "删除静态路由（${ROUTE_TARGET}）" route_clean
+    else
+      run_step "写入静态路由（${ROUTE_TARGET}）" route_apply
+    fi
+  fi
+
   echo
   success "mihomoDNS 安装完成"
   echo
@@ -204,8 +246,22 @@ main() {
   echo "  clashon / clashoff # 开关代理"
   echo "  systemctl status mosdns   # mosdns 服务状态（systemd 安装时）"
   echo "  bash $PROJECT_DIR/scripts/integrate.sh check   # 重新检查联动"
+  echo "  bash $PROJECT_DIR/scripts/route.sh apply --target linux   # 写入静态路由"
+  echo "  bash $PROJECT_DIR/scripts/route.sh clean --target linux   # 删除静态路由"
   echo "  tail -f $LOG_FILE    # 查看本次安装日志"
   echo
+}
+
+# 把命令行路由参数映射到 route.sh 使用的全局变量
+apply_route_args_to_env() {
+  [[ -n "$ARG_ROUTE_TARGET" ]] && ROUTE_TARGET="$ARG_ROUTE_TARGET"
+  [[ -n "$ARG_ROUTE_GATEWAY" ]] && ROUTE_GATEWAY="$ARG_ROUTE_GATEWAY"
+  [[ -n "$ARG_ROUTE_LAN_IP" ]] && ROUTE_LAN_IP="$ARG_ROUTE_LAN_IP"
+  [[ -n "$ARG_ROUTE_LAN_IF" ]] && ROUTE_LAN_IF="$ARG_ROUTE_LAN_IF"
+  [[ -n "$ARG_ROUTE_LAN_CIDR" ]] && ROUTE_LAN_CIDR="$ARG_ROUTE_LAN_CIDR"
+  [[ -n "$ARG_ROUTE_SSH_HOST" ]] && ROUTE_SSH_HOST="$ARG_ROUTE_SSH_HOST"
+  [[ -n "$ARG_ROUTE_IKUAI_HOST" ]] && ROUTE_IKUAI_HOST="$ARG_ROUTE_IKUAI_HOST"
+  return 0
 }
 
 # ============ 前置检查 ============
@@ -223,16 +279,14 @@ preflight_checks() {
   local os arch
   os="$(detect_os 2>/dev/null || echo unknown)"
   arch="$(detect_arch 2>/dev/null || echo unknown)"
-  info "系统: $os / 架构: $arch / root: $([[ ${EUID:-$(id -u)} -eq 0 ]] && echo yes || echo no)"
+  info "系统: ${os} / 架构: ${arch} / root: $([[ ${EUID:-$(id -u)} -eq 0 ]] && echo yes || echo no)"
 
-  # macOS 非目标环境提醒
-  if [[ "$os" != "linux" ]]; then
-    warn "当前系统为 ${os}，clash-for-linux 与 mosdns release 均面向 Linux"
-    info "macOS 下仅能用 --config-only 生成配置，二进制安装将在 install_mosdns 中跳过"
-    $ARG_DRY_RUN || {
-      [[ "$ARG_CONFIG_ONLY" == "true" ]] || confirm "非 Linux 环境，是否继续（仅生成配置）?" "n" \
-        || { ARG_CONFIG_ONLY=true; info "已自动切换为 --config-only 模式"; }
-    }
+  # 非 Linux 直接终止（本项目面向 Linux）；--dry-run 放行以便预览
+  if [[ "$os" != "linux" ]] && ! $ARG_DRY_RUN; then
+    die "本项目仅支持 Linux（当前：${os}）。请在 Linux 目标机上执行。"
+  fi
+  if [[ "$os" != "linux" ]] && $ARG_DRY_RUN; then
+    warn "当前为 ${os}（DRY-RUN 模式下放行，仅预览；实际安装请在 Linux 上执行）"
   fi
 
   # 网络连通性预检

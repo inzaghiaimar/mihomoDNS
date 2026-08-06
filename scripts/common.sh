@@ -60,10 +60,11 @@ run_step() {
 # 全局错误捕获（set -e 触发时输出最后一条命令与行号）
 trap_errors() {
   local rc=$?
-  local line="${BASH_LINENO[0]:-?}"
-  error "脚本异常退出（行 $line，退出码 $rc）"
+  local line="?"
+  [[ ${#BASH_LINENO[@]} -gt 0 ]] && line="${BASH_LINENO[0]}"
+  error "脚本异常退出（行 ${line}，退出码 ${rc}）"
   [[ -n "${STEP_NAME:-}" ]] && error "失败步骤: $STEP_NAME"
-  [[ -n "$LOG_FILE" ]] && error "详见日志: $LOG_FILE"
+  [[ -n "${LOG_FILE:-}" ]] && error "详见日志: $LOG_FILE"
   exit $rc
 }
 

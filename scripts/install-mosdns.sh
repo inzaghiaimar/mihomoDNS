@@ -32,14 +32,7 @@ install_mosdns() {
   local arch os version
   arch="$(detect_arch)"
   os="$(detect_os)"
-
-  # macOS 下：跳过二进制安装，只创建运行目录，给出手动安装指引
-  if [[ "$os" != "linux" ]]; then
-    warn "当前系统为 $os，mosdns release 二进制仅提供 Linux。跳过二进制安装。"
-    info "macOS 本地可执行：brew install mosdns，或从源码自行编译"
-    mkdir -p "$MOSDNS_RUNTIME_DIR"
-    return 0
-  fi
+  [[ "$os" != "linux" ]] && die "本项目仅支持 Linux（当前：$os）"
 
   version="$(resolve_mosdns_version)"
   info "目标版本：$version（架构 $arch）"
