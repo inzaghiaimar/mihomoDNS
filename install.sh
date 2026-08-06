@@ -195,6 +195,7 @@ main() {
   # 7) 生成配置（.env / mixin / mosdns）
   run_step "写回 .env 与生成 clash mixin" apply_airport_to_env
   run_step "生成 clash mixin（机场覆盖）" generate_clash_mixin_for_airport
+  run_step "下载 geosite 分流数据" download_geosite_data
   run_step "生成 mosdns 配置" generate_mosdns_config_for_airport
 
   # 8) 安装（--config-only / --dry-run 跳过二进制安装）

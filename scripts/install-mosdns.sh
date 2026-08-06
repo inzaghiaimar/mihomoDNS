@@ -80,6 +80,53 @@ install_mosdns() {
   rm -rf "$tmp_dir"
 }
 
+# 下载 geosite 分流数据（国内域名集）
+# 来源：mosdns 官方配置包 config_all.zip
+# 失败不中断安装，mosdns 会降级为响应回退分流（国外域名可能受 DNS 污染）
+download_geosite_data() {
+  local rule_dir="$MOSDNS_RUNTIME_DIR/rule"
+  mkdir -p "$rule_dir"
+
+  if [[ -f "$rule_dir/geosite_cn.txt" ]]; then
+    local lines; lines="$(wc -l < "$rule_dir/geosite_cn.txt" 2>/dev/null || echo '?')"
+    success "geosite_cn.txt 已存在（${lines} 行）"
+    return 0
+  fi
+
+  step "下载 geosite 分流数据（国内域名集）"
+  local tmp_dir; tmp_dir="$(mktemp -d)"
+  local zip_file="$tmp_dir/config_all.zip"
+  local zip_url="https://raw.githubusercontent.com/jasonxtt/file/main/mosdns/config/config_all.zip"
+
+  # GitHub raw 可能被墙，先走 ghfast.top 代理，失败则直连
+  if ! download "https://ghfast.top/$zip_url" "$zip_file" 2>/dev/null; then
+    if ! download "$zip_url" "$zip_file"; then
+      rm -rf "$tmp_dir"
+      warn "下载 config_all.zip 失败，mosdns 将使用响应回退分流（国外域名可能受 DNS 污染）"
+      return 1
+    fi
+  fi
+
+  # 只解压 rule/geosite_cn.txt
+  if ! unzip -o "$zip_file" "rule/geosite_cn.txt" -d "$tmp_dir" 2>/dev/null; then
+    rm -rf "$tmp_dir"
+    warn "解压 config_all.zip 失败"
+    return 1
+  fi
+
+  if [[ -f "$tmp_dir/rule/geosite_cn.txt" ]]; then
+    cp "$tmp_dir/rule/geosite_cn.txt" "$rule_dir/geosite_cn.txt"
+    local lines; lines="$(wc -l < "$rule_dir/geosite_cn.txt" 2>/dev/null || echo '?')"
+    success "已下载 geosite_cn.txt（${lines} 行）"
+    rm -rf "$tmp_dir"
+    return 0
+  else
+    rm -rf "$tmp_dir"
+    warn "config_all.zip 中未找到 rule/geosite_cn.txt"
+    return 1
+  fi
+}
+
 # 写入 systemd unit（root 安装时）
 install_mosdns_service() {
   if ! have_systemd; then

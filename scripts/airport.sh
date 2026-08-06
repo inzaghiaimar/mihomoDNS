@@ -207,6 +207,36 @@ EOF
   success "已生成 clash mixin：$mixin_file（同步 runtime 版）"
 }
 
+# ============ DNS 地址格式转换辅助函数 ============
+# 把各种 DNS 地址格式统一转成 TCP DNS 格式 tcp://host:53
+# 原因：socks5 代理只稳定支持 TCP CONNECT，UDP ASSOCIATE 常被阻断；
+#       DoH/DoT 有 TLS 握手超时风险（默认 3-6 秒）；TCP DNS 最稳最快。
+# 支持：https://1.1.1.1/dns-query, tls://8.8.8.8:853, udp://1.1.1.1:53,
+#       tcp://8.8.8.8:53, 1.1.1.1, 1.1.1.1:53, [2001:4860::8888]:53
+_dns_to_tcp() {
+  local s="$1" host
+  # 去掉协议前缀
+  s="${s#https://}"
+  s="${s#tls://}"
+  s="${s#h3://}"
+  s="${s#quic://}"
+  s="${s#udp://}"
+  s="${s#tcp://}"
+  # 去掉路径部分（DoH 的 /dns-query 等）
+  s="${s%%/*}"
+  # 提取 host（去掉端口）——IPv6 地址形如 [2001:4860::8888] 需特殊处理
+  if [[ "$s" == \[* ]]; then
+    host="${s%%]*}"
+    host="${host#\[}"
+  elif [[ "$s" == *:* ]]; then
+    host="${s%:*}"
+  else
+    host="$s"
+  fi
+  [[ -z "$host" ]] && return 1
+  printf 'tcp://%s:53\n' "$host"
+}
+
 # ============ 生成 mosdns 配置（按机场 DNS 需求） ============
 # 配置文件名沿用 mosdns 官方约定的 config_custom.yaml；
 # mosdns start -d <dir> 默认找 config.yaml，因此 systemd unit 的 ExecStart
@@ -218,17 +248,29 @@ EOF
 #   - socks5 是 forward 的全局参数（Args 级，非每个 upstream 项）
 #   - sequence 的 exec 引用其他插件 tag 要用 $ 前缀（$cache, $forward）
 #     不带 $ 会被当作插件类型名，新建匿名插件而非引用
+#
+# 分流策略（已验证可用）：
+#   1. geosite_cn 域名匹配分流（优先）：国内域名走国内 DNS，非国内走代理
+#      —— 避免 DNS 污染（国内 DNS 对被墙域名返回污染 IP，响应回退方案无效）
+#   2. 响应回退分流（fallback）：无 geosite 数据时，国内 DNS 无 IP 则走代理
+#      —— 受 DNS 污染影响，仅作降级方案
+#
+# 上游协议选择（已验证）：
+#   - 国外上游用 TCP DNS（tcp://host:53），不用 DoH/DoT/UDP
+#   - socks5 只稳定支持 TCP CONNECT；DoH/DoT 有 TLS 握手超时；UDP 常被阻断
+#   - concurrent: 2 并发查多上游，任一成功即返回
 generate_mosdns_config_for_airport() {
   local out="$MOSDNS_RUNTIME_DIR/config_custom.yaml"
-  mkdir -p "$MOSDNS_RUNTIME_DIR"
+  local rule_dir="$MOSDNS_RUNTIME_DIR/rule"
+  mkdir -p "$MOSDNS_RUNTIME_DIR" "$rule_dir"
 
   # 拆分 DNS 列表（分号分隔）
   local domestic_dns proxy_dns
   domestic_dns="$(printf '%s' "$AIRPORT_DOMESTIC_DNS" | tr ';' '\n' | grep -v '^$' || true)"
   proxy_dns="$(printf '%s' "$AIRPORT_PROXY_DNS" | tr ';' '\n' | grep -v '^$' || true)"
-  [[ -z "$proxy_dns" ]] && proxy_dns="https://1.1.1.1/dns-query"
+  [[ -z "$proxy_dns" ]] && proxy_dns="1.1.1.1;8.8.8.8"
 
-  # 构造国内上游 yaml 片段：forward.upstreams[] 每项用 addr 字段
+  # 构造国内上游 yaml 片段：直连 UDP（国内 DNS 无污染，UDP 最快）
   local domestic_block="" i=0 line
   while IFS= read -r line; do
     [[ -z "$line" ]] && continue
@@ -237,43 +279,87 @@ generate_mosdns_config_for_airport() {
     i=$((i+1))
   done <<< "$domestic_dns"
 
-  # 构造国外上游 yaml 片段：走 clash 的 SOCKS（mixed-port 兼容 socks5）
-  # socks5 是 forward 的全局参数，不是每个 upstream 项的参数。
-  local proxy_block="" j=0
+  # 构造国外上游 yaml 片段：统一转成 TCP DNS 格式（经 clash SOCKS5 代理）
+  local proxy_block="" j=0 tcp_addr
   while IFS= read -r line; do
     [[ -z "$line" ]] && continue
+    tcp_addr="$(_dns_to_tcp "$line")" || { warn "无法解析 DNS 地址: $line, 跳过"; continue; }
     proxy_block+=$'        - tag: proxy_'"${j}"$'\n'
-    proxy_block+=$'          addr: '"\"${line}\""$'\n'
+    proxy_block+=$'          addr: '"\"${tcp_addr}\""$'\n'
     j=$((j+1))
   done <<< "$proxy_dns"
+  # 兜底：全部转换失败时用默认上游
+  [[ -z "$proxy_block" ]] && proxy_block=$'        - tag: proxy_0\n          addr: "tcp://1.1.1.1:53"\n        - tag: proxy_1\n          addr: "tcp://8.8.8.8:53"\n'
+
+  # 检查 geosite_cn.txt 是否存在，决定分流策略
+  local has_geosite=false
+  [[ -f "$rule_dir/geosite_cn.txt" ]] && has_geosite=true
+
+  # geosite_cn domain_set 插件段（仅当数据文件存在时生成）
+  local geosite_plugin=""
+  if $has_geosite; then
+    geosite_plugin='  - tag: geosite_cn
+    type: domain_set
+    args:
+      files:
+        - "rule/geosite_cn.txt"
+
+'
+  else
+    warn "rule/geosite_cn.txt 不存在，将使用响应回退分流（国外域名可能受 DNS 污染）"
+    warn "运行 install-mosdns.sh 的 download_geosite_data 可下载分流数据"
+  fi
+
+  # main_sequence 分流逻辑（单引号字符串，$ 为字面量，供 mosdns 读取）
+  local sequence_args
+  if $has_geosite; then
+    # 域名匹配分流：国内域名走国内DNS，非国内走代理
+    sequence_args='      - exec: $cache
+      - matches: "qname $geosite_cn"
+        exec: $forward_domestic
+      - exec: $forward_proxy'
+  else
+    # 响应回退分流：国内 DNS 无 IP 则走代理（受 DNS 污染影响，降级方案）
+    sequence_args='      - exec: $cache
+      - exec: $forward_domestic
+      - matches: "!resp_ip 0.0.0.0/0"
+        exec: $forward_proxy'
+  fi
 
   cat > "$out" <<EOF
 # mosdns 配置 — 由 clash-mosdns 一键安装项目按机场（${AIRPORT_ID}）生成
 # 运行目录: ${MOSDNS_RUNTIME_DIR}
 # 与 clash-for-linux 联动：
-#   - 国内域名 → 国内 DNS 直连
-#   - 国外域名 → 国外 DNS（经 clash SOCKS ${CLASH_MIXED_PORT}）
-#   - FakeIP 域名 → clash 内部 DNS 127.0.0.1:${CLASH_DNS_PORT}（经 SOCKS）
+#   - 国内域名（geosite_cn）→ 国内 DNS 直连
+#   - 国外域名 → 国外 DNS（经 clash SOCKS ${CLASH_MIXED_PORT}，TCP DNS）
+#   - 使用 domain_set 域名匹配分流，避免 DNS 污染
 #
-# 说明：本配置为最小可用版本（默认全部走国内 DNS，国外上游已就绪但未启用）。
-# 完整国内外域名分流需导入 mosdns 官方配置包 config_all.zip：
-#   https://raw.githubusercontent.com/jasonxtt/file/main/mosdns/config/config_all.zip
-# 解压后覆盖本目录，再重启 mosdns 即可启用 geosite/geoip 分流。
+# 上游协议选择：TCP DNS（非 DoH/DoT/UDP）
+#   - socks5 代理只稳定支持 TCP CONNECT，UDP ASSOCIATE 常被阻断
+#   - DoH/DoT 有 TLS 握手超时风险（默认 3-6 秒）
+#   - TCP DNS 无 TLS 握手，经 socks5 走 CONNECT，最稳最快
+#
+# 分流数据：rule/geosite_cn.txt（国内域名集）
+#   - 由 install-mosdns.sh 的 download_geosite_data 下载
+#   - 来源：mosdns 官方配置包 config_all.zip
 
 log:
   level: info
   file: "${MOSDNS_RUNTIME_DIR}/mosdns.log"
 
 plugins:
+${geosite_plugin}  # 国内 DNS 直连
   - tag: forward_domestic
     type: forward
     args:
       upstreams:
 ${domestic_block}
+  # 国外 DNS 经 clash SOCKS5 代理（TCP DNS，concurrent 并发查多上游）
   - tag: forward_proxy
     type: forward
     args:
       socks5: "127.0.0.1:${CLASH_MIXED_PORT}"
+      concurrent: 2
       upstreams:
 ${proxy_block}
   - tag: cache
@@ -282,13 +368,11 @@ ${proxy_block}
       size: 4096
       lazy_cache_ttl: 86400
 
+  # ${has_geosite:+域名匹配分流}${has_geosite:-响应回退分流}
   - tag: main_sequence
     type: sequence
     args:
-      - exec: \$cache
-      - exec: \$forward_domestic
-      # 如需把国外域名走代理上游，导入 config_all.zip 后，
-      # 在此追加 matches+forward_proxy 规则（见 mosdns 文档）。
+${sequence_args}
 
   - tag: main_udp_server
     type: udp_server
