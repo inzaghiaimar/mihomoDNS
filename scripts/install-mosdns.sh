@@ -47,15 +47,17 @@ install_mosdns() {
   local archive_name="mosdns-${ver_no_v}-linux-${arch}.tar.gz"
   local download_url="$MOSDNS_REPO/releases/download/${version}/${archive_name}"
 
+  # 注意：不用 trap ... RETURN 清理临时目录——bash 的 RETURN trap 是全局的，
+  # 会在后续任意函数返回时再次触发，此时 local tmp_dir 已销毁，set -u 下报
+  # "unbound variable" 导致脚本中断。改用显式清理。
   local tmp_dir; tmp_dir="$(mktemp -d)"
-  trap 'rm -rf "$tmp_dir"' RETURN
 
   download "$download_url" "$tmp_dir/$archive_name" \
-    || die "下载 mosdns 失败：$download_url"
+    || { rm -rf "$tmp_dir"; die "下载 mosdns 失败：$download_url"; }
 
   info "解压: $archive_name"
-  tar -xzf "$tmp_dir/$archive_name" -C "$tmp_dir" || die "解压失败"
-  [[ -f "$tmp_dir/mosdns" ]] || die "解压后未找到 mosdns 二进制"
+  tar -xzf "$tmp_dir/$archive_name" -C "$tmp_dir" || { rm -rf "$tmp_dir"; die "解压失败"; }
+  [[ -f "$tmp_dir/mosdns" ]] || { rm -rf "$tmp_dir"; die "解压后未找到 mosdns 二进制"; }
 
   # 安装二进制
   local target_dir="$MOSDNS_INSTALL_BIN_DIR"
@@ -74,6 +76,8 @@ install_mosdns() {
 
   # 运行目录
   mkdir -p "$MOSDNS_RUNTIME_DIR"
+
+  rm -rf "$tmp_dir"
 }
 
 # 写入 systemd unit（root 安装时）
