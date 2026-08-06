@@ -216,7 +216,8 @@ EOF
 #   - 没有 type: server，拆成 udp_server + tcp_server 两个插件
 #   - forward 的 upstreams 项用 addr 字段（不是 upstream）
 #   - socks5 是 forward 的全局参数（Args 级，非每个 upstream 项）
-#   - sequence 的 exec 引用其他插件 tag 直接用 tag 名（不带 $ 前缀）
+#   - sequence 的 exec 引用其他插件 tag 要用 $ 前缀（$cache, $forward）
+#     不带 $ 会被当作插件类型名，新建匿名插件而非引用
 generate_mosdns_config_for_airport() {
   local out="$MOSDNS_RUNTIME_DIR/config_custom.yaml"
   mkdir -p "$MOSDNS_RUNTIME_DIR"
@@ -279,8 +280,8 @@ plugins:
   - tag: main_sequence
     type: sequence
     args:
-      - exec: cache
-      - exec: forward_domestic
+      - exec: \$cache
+      - exec: \$forward_domestic
       # 如需把国外域名走代理上游，导入 config_all.zip 后，
       # 在此追加 matches+forward_proxy 规则（见 mosdns 文档）。
 
