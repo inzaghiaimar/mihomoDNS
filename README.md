@@ -18,13 +18,14 @@
 - [快速开始](#快速开始)
 - [安装参数详解](#安装参数详解)
 - [机场个性化配置](#机场个性化配置)
-- [与 ROS / 爱快配合：静态路由表设置](#与-ros--爱快配合静态路由表设置)
-  - [场景说明](#场景说明)
+- [主路由配合指南：DNS 劫持与静态路由](#主路由配合指南dns-劫持与静态路由)
+  - [前置条件：mosdns 局域网监听](#前置条件mosdns-局域网监听)
+  - [配置方案选择](#配置方案选择)
+  - [ROS / RouterOS 配置](#ros--routeros-配置)
+  - [爱快 iKuai 配置](#爱快-ikuai-配置)
   - [Linux 本机静态路由](#linux-本机静态路由)
-  - [ROS / RouterOS 静态路由](#ros--routeros-静态路由)
-  - [爱快 iKuai 静态路由](#爱快-ikuai-静态路由)
   - [路由参数一览](#路由参数一览)
-  - [删除静态路由](#删除静态路由)
+  - [一键删除所有路由规则](#一键删除所有路由规则)
 - [PVE 部署操作手册](#pve-部署操作手册)
   - [PVE 选型对比](#pve-选型对比)
   - [PVE 网络拓扑](#pve-网络拓扑)
@@ -70,39 +71,42 @@
 
 ```
 ┌──────────────────────────────────────────────────────────┐
-│                       Linux 宿主机                         │
+│                    mihomoDNS 服务器                        │
 │                                                          │
-│   系统/应用 ──DNS查询──► mosdns(:5335)                    │
+│   系统/应用 ──DNS查询──► mosdns(0.0.0.0:5335)             │
 │                           │                              │
 │         ┌─────────────────┼─────────────────┐            │
 │         ▼                                   ▼            │
-│   国内 DNS 直连                    国外 DNS ──SOCKS──► clash(:7890)
-│   (223.5.5.5 等)                  (1.1.1.1/8.8.8.8)  │    │
+│   国内域名 → 国内 DNS 直连         国外域名 → TCP DNS      │
+│   (geosite_cn 域名匹配)            ──SOCKS──► clash(:7890)│
+│   223.5.5.5 / 119.29.29.29         1.1.1.1 / 8.8.8.8     │
 │                                                      │    │
 │   fakeip 域名 ──► clash 内部 DNS(:1053) ◄────────────┘    │
 │                          │                              │
 │   clash(mihomo) 代理分流 ◄┘                              │
-│   WebUI: http://<IP>:9090/ui   mosdns WebUI: :9099      │
+│   WebUI: http://<IP>:9090/ui   mosdns WebUI: http://<IP>:9099
 └──────────────────────────────────────────────────────────┘
           ▲                                    ▲
           │ 客户端 DNS(53) 经主路由 DNAT 指向本机  │ 本机默认网关经主路由
           │                                    │
 ┌─────────┴────────────────────────────────────┴──────────┐
 │              ROS / 爱快 主路由（192.168.1.1）              │
-│  - NAT: 53 → 本机:5335（DNS 劫持）                        │
-│  - 静态路由: 代理网段 → 本机（旁路由回程）                 │
+│  - DHCP: DNS → 192.168.1.2（推荐）                        │
+│  - NAT: 53 → 192.168.1.2:5335（DNS 劫持，兜底）           │
 └──────────────────────────────────────────────────────────┘
 ```
 
-| 端口 | 服务 | 说明 |
-| --- | --- | --- |
-| `7890` | clash mixed-port | HTTP/SOCKS 混合代理，mosdns 国外 DNS 经此转发 |
-| `9090` | clash external-controller | clash API 与 WebUI |
-| `1053` | clash DNS | mihomo 内部 DNS（fakeip/redir-host） |
-| `5335` | mosdns | mosdns 监听，供系统/应用查询 |
-| `9099` | mosdns WebUI | 浏览器管理界面 |
+| 端口 | 服务 | 说明 | 默认监听 |
+| --- | --- | --- | --- |
+| `7890` | clash mixed-port | HTTP/SOCKS 混合代理，mosdns 国外 DNS 经此转发 | `*` |
+| `9090` | clash controller | clash API 与 WebUI | `0.0.0.0` |
+| `1053` | clash DNS | mihomo 内部 DNS（fakeip） | `*` |
+| `5335` | mosdns DNS | mosdns 监听，供系统/局域网查询 | `0.0.0.0` |
+| `9099` | mosdns WebUI | 浏览器管理界面（需配置 `api.http`） | `0.0.0.0` |
 
-> 所有端口均可在 `.env` 或 `airports/<name>.conf` 中调整。
+> 所有端口与监听地址均可在 `.env` 中调整：
+> - `MOSDNS_LISTEN_ADDR` — mosdns 监听地址（`0.0.0.0`=局域网可访问，`127.0.0.1`=仅本机）
+> - `MOSDNS_DNS_PORT` / `MOSDNS_WEBUI_PORT` / `CLASH_MIXED_PORT` 等
 
 ---
 
@@ -232,37 +236,181 @@ bash install.sh --airport myairport
 
 ---
 
-## 与 ROS / 爱快配合：静态路由表设置
+## 主路由配合指南：DNS 劫持与静态路由
 
-本项目的 Linux 宿主机通常作为**旁路由 / DNS 服务器**部署，主路由是 ROS（RouterOS）或爱快 iKuai。为了让客户端的 DNS 查询自动到达本机 mosdns，以及让本机的出网流量正确经主路由，需要在主路由上写入静态路由 / NAT 规则。
+mihomoDNS 服务器通常作为**旁路由 / DNS 服务器**部署，主路由是 ROS（RouterOS）或爱快 iKuai。需要在主路由上配置 DNS 指向，让局域网客户端的 DNS 查询到达 mosdns。
 
-`scripts/route.sh` 脚本封装了这一过程，支持三种目标：`linux`（本机）、`ros`（RouterOS）、`ikuai`（爱快）。
+> 下文以 `192.168.1.0/24` 网段为例：主路由 `192.168.1.1`，mihomoDNS 服务器 `192.168.1.2`。请按实际网段替换。
 
-### 场景说明
+### 前置条件：mosdns 局域网监听
 
-```
-                        ┌─────────────────────────┐
-                        │   ROS / 爱快 主路由       │
-                        │   LAN: 192.168.1.1       │
-                        └────────┬────────────────┘
-                                 │
-              ┌──────────────────┼──────────────────┐
-              │                  │                  │
-     ┌────────┴───────┐  ┌───────┴───────┐  ┌───────┴───────┐
-     │  客户端 A       │  │  客户端 B      │  │ mihomoDNS 宿主机│
-     │  192.168.1.10  │  │  192.168.1.11 │  │ 192.168.1.2    │
-     │  DNS → 主路由   │  │  DNS → 主路由  │  │ mosdns:5335    │
-     └────────────────┘  └───────────────┘  │ clash:7890     │
-                                            └────────────────┘
+mosdns 默认监听 `0.0.0.0:5335`（局域网可访问）。安装后请确认：
+
+```bash
+# 在 mihomoDNS 服务器上验证
+ss -tulnp | grep 5335
+# 应显示 *:5335（而非 127.0.0.1:5335）
+
+# 放行防火墙
+ufw allow 5335/udp && ufw allow 5335/tcp
+ufw allow 9099/tcp  # mosdns WebUI
 ```
 
-- **DNS 劫持**：主路由把客户端发往 53 端口的流量 DNAT 到 `192.168.1.2:5335`（mosdns）
-- **旁路由回程**（可选）：主路由把需要走代理的网段路由到 `192.168.1.2`
-- **本机默认网关**：mihomoDNS 宿主机的默认网关指向主路由 `192.168.1.1`
+> 若监听地址为 `127.0.0.1`，在 `.env` 中设置 `MOSDNS_LISTEN_ADDR=0.0.0.0` 后重新执行 `bash install.sh --config-only`。
+
+### 配置方案选择
+
+| 方案 | 作用 | 适用场景 | 是否需要主路由操作 |
+| --- | --- | --- | --- |
+| **A. DHCP 分发 DNS** | 客户端自动获取 mosdns 作为 DNS | 新设备 / 配合 DHCP | 是（改 DHCP 设置） |
+| **B. DNS 劫持** | 强制所有 53 端口流量指向 mosdns | 兜底 / 防硬编码 DNS 绕过 | 是（添加 NAT 规则） |
+| C. 旁路由回程路由 | 全流量经 mihomoDNS 代理 | **仅 TUN 模式** | 是（添加静态路由） |
+
+> **推荐**：方案 A + B 同时配置。方案 C 仅在开启 clash TUN 透明代理时使用，当前默认配置（SOCKS 模式）不需要。
+
+---
+
+### ROS / RouterOS 配置
+
+#### 方案 A：DHCP 分发 DNS（推荐）
+
+在 ROS 上把 DHCP 下发的 DNS 服务器改为 mihomoDNS 服务器地址：
+
+```routeros
+# 把所有 DHCP 网络的 DNS 服务器设为 mihomoDNS 服务器
+/ip dhcp-server network set [find] dns-server=192.168.1.2
+```
+
+> 客户端重新获取 IP（重连 WiFi 或续租 DHCP）后生效。此方案温和，不劫持流量，客户端也可手动覆盖 DNS。
+
+#### 方案 B：DNS 劫持（推荐配合 A 使用）
+
+强制局域网所有 DNS 查询（含硬编码 8.8.8.8 的设备）指向 mosdns：
+
+```routeros
+# UDP 53 → 192.168.1.2:5335
+/ip firewall nat add chain=dstnat protocol=udp dst-port=53 \
+    action=dst-nat to-addresses=192.168.1.2 to-ports=5335 \
+    comment="mihomoDNS-udp"
+
+# TCP 53 → 192.168.1.2:5335
+/ip firewall nat add chain=dstnat protocol=tcp dst-port=53 \
+    action=dst-nat to-addresses=192.168.1.2 to-ports=5335 \
+    comment="mihomoDNS-tcp"
+```
+
+> 因为大多数客户端 DNS 指向 53 端口，而 mosdns 监听 5335，所以需要 DNAT 做端口转换。
+
+#### 方案 C：旁路由回程路由（仅 TUN 模式）
+
+> **警告**：此方案仅适用于 clash 开启 TUN 透明代理（`AIRPORT_TUN=true`）的场景。默认 SOCKS 模式下执行会导致**路由回环**，切勿使用！
+
+```routeros
+# 仅 TUN 模式：把需要走代理的网段路由到 mihomoDNS
+/ip route add dst-address=192.168.1.0/24 gateway=192.168.1.2 \
+    comment="mihomoDNS-route"
+
+# 仅 TUN 模式：把特定客户端全部流量经 mihomoDNS 代理
+/ip route add dst-address=192.168.1.10/32 gateway=192.168.1.2
+```
+
+#### 删除 ROS 规则
+
+```routeros
+# 删除 DNS 劫持 NAT 规则（按 comment 匹配）
+/ip firewall nat remove [find comment~"mihomoDNS"]
+
+# 删除回程静态路由
+/ip route remove [find comment="mihomoDNS-route"]
+
+# 验证
+/ip firewall nat print
+/ip route print
+```
+
+#### ROS WebFig / WinBox 手动操作
+
+1. **DNS 劫持（NAT）**：`IP` → `Firewall` → `NAT` → `+`
+   - `Chain`: dstnat
+   - `Protocol`: 6 (tcp) 或 17 (udp)
+   - `Dst. Port`: 53
+   - `Action`: dst-nat
+   - `To Addresses`: 192.168.1.2
+   - `To Ports`: 5335
+
+2. **DHCP DNS**：`IP` → `DHCP Server` → `Networks` → 编辑 → `DNS Servers`: 192.168.1.2
+
+#### SSH 自动执行
+
+```bash
+# 安装 sshpass
+apt-get install -y sshpass
+
+# 自动执行（SSH 密码通过环境变量 SSHPASS 传入）
+SSHPASS=your_password bash scripts/route.sh apply \
+  --target ros \
+  --lan-ip 192.168.1.2 \
+  --ssh-host 192.168.1.1 \
+  --ssh-user admin
+```
+
+---
+
+### 爱快 iKuai 配置
+
+#### 方案 A：DHCP 分发 DNS
+
+爱快 Web 后台 → `网络设置` → `DHCP 服务端` → 编辑 DHCP 地址池 → `DNS` 填 `192.168.1.2`
+
+#### 方案 B：DNS 劫持（端口映射）
+
+爱快 Web 后台 → `流控分流` → `端口映射` → `添加`：
+
+| 协议 | 外部端口 | 内部 IP | 内部端口 |
+| --- | --- | --- | --- |
+| UDP | 53 | 192.168.1.2 | 5335 |
+| TCP | 53 | 192.168.1.2 | 5335 |
+
+或经 SSH 执行（爱快基于 OpenWrt，支持 iptables）：
+
+```bash
+ssh root@192.168.1.1
+
+iptables -t nat -A PREROUTING -p udp --dport 53 \
+    -j DNAT --to-destination 192.168.1.2:5335
+iptables -t nat -A PREROUTING -p tcp --dport 53 \
+    -j DNAT --to-destination 192.168.1.2:5335
+```
+
+#### 方案 C：旁路由回程路由（仅 TUN 模式）
+
+> **警告**：同 ROS 方案 C，仅 TUN 模式可用。
+
+爱快 Web 后台 → `网络设置` → `路由设置` → `静态路由` → `添加`：
+- 目标网段: `192.168.1.0/24`，网关: `192.168.1.2`
+
+#### 删除爱快规则
+
+```bash
+# Web 后台：流控分流 → 端口映射 → 删除 53 → 192.168.1.2:5335 的规则
+# Web 后台：网络设置 → 路由设置 → 静态路由 → 删除相关条目
+
+# SSH
+iptables -t nat -D PREROUTING -p udp --dport 53 \
+    -j DNAT --to-destination 192.168.1.2:5335
+iptables -t nat -D PREROUTING -p tcp --dport 53 \
+    -j DNAT --to-destination 192.168.1.2:5335
+ip route del 192.168.1.0/24 via 192.168.1.2
+
+# 或用脚本
+bash scripts/route.sh clean --target ikuai --lan-ip 192.168.1.2 --ikuai-host 192.168.1.1
+```
+
+---
 
 ### Linux 本机静态路由
 
-适用于 mihomoDNS 宿主机本身需要设置默认网关、关闭 rp_filter、开启 IP 转发的场景。
+适用于 mihomoDNS 服务器本身需要设置默认网关、关闭 rp_filter、开启 IP 转发的场景。
 
 #### 一键写入
 
@@ -271,7 +419,7 @@ bash install.sh --airport myairport
 bash install.sh --airport generic --subscription-url "https://..." \
   --route-target linux --route-gateway 192.168.1.1
 
-# 或手动指定全部参数
+# 或单独调用 route.sh
 bash scripts/route.sh apply \
   --target linux \
   --gateway 192.168.1.1 \
@@ -281,8 +429,6 @@ bash scripts/route.sh apply \
 ```
 
 #### 实际执行的命令
-
-脚本会在本机执行：
 
 ```bash
 # 1) 设置默认网关经主路由
@@ -315,169 +461,6 @@ bash scripts/route.sh clean --target linux
 
 ---
 
-### ROS / RouterOS 静态路由
-
-适用于主路由为 MikroTik RouterOS / ROS 软路由的场景。脚本生成 ROS CLI 命令，可选经 SSH 自动执行。
-
-#### 一键生成并执行
-
-```bash
-# 经 install.sh（安装后自动生成 ROS 命令）
-bash install.sh --airport generic --subscription-url "https://..." \
-  --route-target ros \
-  --route-lan-ip 192.168.1.2 \
-  --route-ssh-host 192.168.1.1
-
-# 或单独调用 route.sh
-bash scripts/route.sh apply \
-  --target ros \
-  --lan-ip 192.168.1.2 \
-  --ssh-host 192.168.1.1
-```
-
-#### 生成的 ROS CLI 命令（写入）
-
-在 ROS 主路由执行以下命令，作用是把客户端 DNS(53) 流量自动指向本机 mosdns(:5335)：
-
-```routeros
-# 1) DNS 劫持：UDP 53 → 本机 5335
-/ip firewall nat add chain=dstnat protocol=udp dst-port=53 \
-    action=dst-nat to-addresses=192.168.1.2 to-ports=5335 \
-    comment="mihomoDNS-udp"
-
-# 2) DNS 劫持：TCP 53 → 本机 5335
-/ip firewall nat add chain=dstnat protocol=tcp dst-port=53 \
-    action=dst-nat to-addresses=192.168.1.2 to-ports=5335 \
-    comment="mihomoDNS-tcp"
-
-# 3) 旁路由回程（按需）：把需要走代理的网段指向本机
-/ip route add dst-address=192.168.1.0/24 gateway=192.168.1.2 \
-    comment="mihomoDNS-route"
-
-# 4) 若需把特定客户端全部流量经本机代理
-/ip route add dst-address=192.168.1.10/32 gateway=192.168.1.2
-```
-
-#### 生成的 ROS CLI 命令（删除）
-
-```routeros
-# 1) 删除 DNS 劫持 NAT 规则（按 comment 匹配）
-/ip firewall nat remove [find comment~"mihomoDNS"]
-
-# 2) 删除回程静态路由
-/ip route remove [find comment="mihomoDNS-route"]
-
-# 验证
-/ip firewall nat print
-/ip route print
-```
-
-#### SSH 自动执行
-
-若提供了 `--route-ssh-host`，脚本会询问是否经 SSH 自动执行。需要 `sshpass`（否则交互输入密码）：
-
-```bash
-# 安装 sshpass（Ubuntu/Debian）
-apt-get install -y sshpass
-
-# 自动执行（SSH 密码通过环境变量 SSHPASS 传入）
-SSHPASS=your_password bash scripts/route.sh apply \
-  --target ros \
-  --lan-ip 192.168.1.2 \
-  --ssh-host 192.168.1.1 \
-  --ssh-user admin
-```
-
-#### ROS WebFig / WinBox 手动操作
-
-若不便用 SSH，也可在 ROS 管理界面手动添加：
-
-1. **DNS 劫持（NAT）**：`IP` → `Firewall` → `NAT` → `+`
-   - `Chain`: dstnat
-   - `Protocol`: 6 (tcp) 或 17 (udp)
-   - `Dst. Port`: 53
-   - `Action`: dst-nat
-   - `To Addresses`: 192.168.1.2
-   - `To Ports`: 5335
-
-2. **静态路由**：`IP` → `Routes` → `+`
-   - `Dst. Address`: 192.168.1.0/24（或客户端 IP/32）
-   - `Gateway`: 192.168.1.2
-
----
-
-### 爱快 iKuai 静态路由
-
-适用于主路由为爱快 iKuai 软路由的场景。脚本生成 Web 后台操作步骤与 SSH 命令。
-
-#### 一键生成
-
-```bash
-# 经 install.sh
-bash install.sh --airport generic --subscription-url "https://..." \
-  --route-target ikuai \
-  --route-lan-ip 192.168.1.2 \
-  --route-ikuai-host 192.168.1.1
-
-# 或单独调用 route.sh
-bash scripts/route.sh apply \
-  --target ikuai \
-  --lan-ip 192.168.1.2 \
-  --ikuai-host 192.168.1.1
-```
-
-#### 方式 A：爱快 Web 后台手动操作
-
-1. **DNS 劫持（端口映射）**：
-   - `流控分流` → `端口映射` → `添加`
-   - 协议: `UDP`，外部端口: `53`，内部 IP: `192.168.1.2`，内部端口: `5335`
-   - 再添加一条 `TCP` / `53` → `192.168.1.2:5335`
-
-2. **静态路由（旁路由回程，可选）**：
-   - `网络设置` → `路由设置` → `静态路由` → `添加`
-   - 目标网段: `192.168.1.0/24`，网关: `192.168.1.2`
-
-3. **特定客户端全流量经本机（可选）**：
-   - 目标网段填客户端 IP/32，网关填 `192.168.1.2`
-
-#### 方式 B：经 SSH 执行（爱快基于 OpenWrt，支持 iptables）
-
-```bash
-ssh root@192.168.1.1
-
-# DNS 劫持
-iptables -t nat -A PREROUTING -p udp --dport 53 \
-    -j DNAT --to-destination 192.168.1.2:5335
-iptables -t nat -A PREROUTING -p tcp --dport 53 \
-    -j DNAT --to-destination 192.168.1.2:5335
-
-# 静态路由（旁路由回程）
-ip route add 192.168.1.0/24 via 192.168.1.2
-```
-
-#### 删除
-
-```bash
-# Web 后台
-# 流控分流 → 端口映射 → 删除 53 → 192.168.1.2:5335 的规则
-# 网络设置 → 路由设置 → 静态路由 → 删除网关为 192.168.1.2 的条目
-
-# SSH
-iptables -t nat -D PREROUTING -p udp --dport 53 \
-    -j DNAT --to-destination 192.168.1.2:5335
-iptables -t nat -D PREROUTING -p tcp --dport 53 \
-    -j DNAT --to-destination 192.168.1.2:5335
-ip route del 192.168.1.0/24 via 192.168.1.2
-```
-
-或用脚本：
-
-```bash
-bash scripts/route.sh clean --target ikuai --lan-ip 192.168.1.2 --ikuai-host 192.168.1.1
-```
-
----
-
 ### 路由参数一览
 
 | 参数 | 环境变量 | 适用目标 | 说明 |
@@ -495,18 +478,16 @@ bash scripts/route.sh clean --target ikuai --lan-ip 192.168.1.2 --ikuai-host 192
 
 > 这些参数也可写在 `.env` 文件中，见 `.env.example` 的「静态路由」部分。
 
-### 删除静态路由
-
-所有目标都支持 `clean` 子命令或 `--route-clean` 参数：
+### 一键删除所有路由规则
 
 ```bash
-# 删除 Linux 本机路由
+# Linux 本机
 bash scripts/route.sh clean --target linux
 
-# 删除 ROS 路由（生成删除命令）
+# ROS
 bash scripts/route.sh clean --target ros --lan-ip 192.168.1.2 --ssh-host 192.168.1.1
 
-# 删除爱快路由（生成删除命令）
+# 爱快
 bash scripts/route.sh clean --target ikuai --lan-ip 192.168.1.2 --ikuai-host 192.168.1.1
 
 # 经 install.sh 删除
@@ -1191,7 +1172,7 @@ journalctl -u mosdns -f
 ### WebUI
 
 - clash：<http://<本机IP>:9090/ui>
-- mosdns：<http://<本机IP>:9099>
+- mosdns：<http://<本机IP>:9099>（需配置 `api.http`，安装时已自动生成）
 
 ### 让系统 DNS 走 mosdns
 
@@ -1252,13 +1233,19 @@ mihomoDNS/
 ## 常见问题
 
 **Q：mosdns 国外 DNS 为什么要走 clash 的 SOCKS？**
-A：避免 DNS 泄露与污染。mosdns 把国外域名查询经 `127.0.0.1:7890` 转发到国外 DoH/DoT，结果由 clash 代理通道获取，不会被中间设备污染。
+A：避免 DNS 泄露与污染。mosdns 把国外域名查询经 `127.0.0.1:7890` 转发到国外 TCP DNS，结果由 clash 代理通道获取，不会被中间设备污染。
 
 **Q：ROS/爱快上为什么要把 53 端口 DNAT 到 5335？**
-A：mosdns 默认监听 5335（非 root 无法绑 53）。在主路由上做 DNAT，客户端无需任何设置，DNS 查询自动到达 mosdns。
+A：mosdns 默认监听 5335（非特权容器无法绑 53）。在主路由上做 DNAT，客户端无需任何设置，DNS 查询自动到达 mosdns。也可通过 DHCP 分发 DNS 配合使用。
+
+**Q：ROS 上的 4 条命令都要执行吗？**
+A：不是。方案 A（DHCP 分发 DNS）和方案 B（DNS 劫持）推荐同时配置；方案 C（旁路由回程路由）仅 TUN 模式可用，默认 SOCKS 模式切勿执行，否则会导致路由回环。
 
 **Q：旁路由模式下本机需要什么配置？**
 A：① 默认网关指向主路由；② 关闭 rp_filter；③ 开启 ip_forward。`--route-target linux` 一键完成。
+
+**Q：mosdns WebUI（9099）打不开？**
+A：确认配置文件中包含 `api: http: "0.0.0.0:9099"` 段。重新执行 `bash install.sh --config-only` 生成配置后重启 mosdns。
 
 **Q：ROS SSH 自动执行失败？**
 A：安装 `sshpass`，或使用密钥认证。也选择不自动执行，手动复制命令到 ROS 后台。
