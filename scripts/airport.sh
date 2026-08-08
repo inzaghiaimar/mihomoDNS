@@ -108,6 +108,7 @@ apply_airport_to_env() {
   # 本项目自定义端口（mosdns 侧读取）
   set_env_value "CLASH_DNS_PORT" "$CLASH_DNS_PORT"
   set_env_value "MOSDNS_DNS_PORT" "$MOSDNS_DNS_PORT"
+  set_env_value "MOSDNS_LISTEN_ADDR" "$MOSDNS_LISTEN_ADDR"
   set_env_value "MOSDNS_WEBUI_PORT" "$MOSDNS_WEBUI_PORT"
   set_env_value "AIRPORT_ID" "$AIRPORT_ID"
   set_env_value "AIRPORT_DNS_MODE" "$AIRPORT_DNS_MODE"
@@ -378,13 +379,13 @@ ${sequence_args}
     type: udp_server
     args:
       entry: main_sequence
-      listen: 127.0.0.1:${MOSDNS_DNS_PORT}
+      listen: ${MOSDNS_LISTEN_ADDR}:${MOSDNS_DNS_PORT}
 
   - tag: main_tcp_server
     type: tcp_server
     args:
       entry: main_sequence
-      listen: 127.0.0.1:${MOSDNS_DNS_PORT}
+      listen: ${MOSDNS_LISTEN_ADDR}:${MOSDNS_DNS_PORT}
 EOF
   success "已生成 mosdns 配置：$out"
 }
