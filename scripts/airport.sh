@@ -348,6 +348,9 @@ log:
   level: info
   file: "${MOSDNS_RUNTIME_DIR}/mosdns.log"
 
+api:
+  http: "0.0.0.0:${MOSDNS_WEBUI_PORT}"
+
 plugins:
 ${geosite_plugin}  # 国内 DNS 直连
   - tag: forward_domestic
