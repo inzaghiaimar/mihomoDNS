@@ -281,7 +281,24 @@ ufw allow 9099/tcp  # mosdns WebUI
 /ip dhcp-server network set [find] dns-server=192.168.1.2
 ```
 
-> 客户端重新获取 IP（重连 WiFi 或续租 DHCP）后生效。此方案温和，不劫持流量，客户端也可手动覆盖 DNS。
+> ⚠️ **DHCP DNS 服务器填几个？**
+>
+> 客户端（尤其 Windows / 安卓）是**并发查询**所有配置的 DNS 服务器，谁先返回就用谁。如果填了备用公共 DNS（如 223.5.5.5、119.29.29.29），其响应通常快于经代理查询的 mosdns，会**绕过分流**导致污染。
+>
+> **推荐配置**：
+>
+> | 方案 | DNS 1 | DNS 2 | DNS 3 | 说明 |
+> | --- | --- | --- | --- | --- |
+> | ✅ **严格分流（推荐）** | `192.168.1.2`（mihomoDNS） | 留空 | 留空 | 所有查询必经 mosdns，分流最干净 |
+> | ⚠️ 带兜底（有绕过风险） | `192.168.1.2` | `192.168.1.1`（主路由 LAN IP） | 留空 | mihomoDNS 挂掉时通过 ROS 主路由 DNS 兜底，但并发查询可能偶尔绕过 |
+> | ❌ 不推荐 | `192.168.1.2` | `223.5.5.5` | `119.29.29.29` | 公共 DNS 响应快，大概率绕过 mosdns |
+>
+> **最佳实践**：DHCP 只填一个 mihomoDNS + 同时做**方案 B DNS 劫持**，即使客户端手动改 DNS 也会被强制拦截。
+
+> ROS 自己的系统 DNS（`/ip dns set servers=`）与 DHCP 下发无关。如果希望 ROS 系统本身也走 mosdns 分流，可执行：
+> ```routeros
+> /ip dns set allow-remote-requests=yes servers=192.168.1.2
+> ```
 
 #### 方案 B：DNS 劫持（推荐配合 A 使用）
 
@@ -498,655 +515,132 @@ bash install.sh --route-target ros --route-clean --route-lan-ip 192.168.1.2 --ro
 
 ---
 
-## PVE 部署操作手册
+## PVE / ESXi 部署（精简版）
 
-Proxmox VE（PVE）是部署旁路由/DNS 服务的常见平台。mihomoDNS 可运行在 **KVM 虚拟机** 或 **LXC 容器** 中。本手册给出从零开始的完整部署步骤。
+> 以下保留核心步骤，以 `192.168.1.2` 为 mihomoDNS 服务器，`192.168.1.1` 为主路由。
 
-> 本手册以 `192.168.1.0/24` 网段为例：主路由 `192.168.1.1`，mihomoDNS 宿主 `192.168.1.2`。请按实际网段替换。
+### 选型：LXC vs KVM vs ESXi VM
 
-### PVE 选型对比
+| 平台 | 类型 | 推荐资源 | Tun 透明代理 | 适用 |
+| --- | --- | --- | --- | --- |
+| **PVE LXC** | 容器 | 1C / 256M / 4G | 需宿主透传 `/dev/net/tun` | 纯 DNS + SOCKS（默认模式），最省资源 |
+| **PVE KVM** | 虚拟机 | 1C / 512M / 8G | 原生支持 | 需要 Tun 模式 |
+| **ESXi** | 虚拟机 | 1C / 512M / 8G 精简盘 | 原生支持 | VMware 环境 |
 
-| 维度 | LXC 容器 | KVM 虚拟机 |
-| --- | --- | --- |
-| 资源占用 | 极低（共享宿主内核，~64M 即可） | 较高（独立内核，建议 ≥512M） |
-| 启动速度 | 秒级 | 较慢（需引导内核） |
-| 内核模块 | 依赖宿主加载（TUN/TAP 需宿主开启） | 自带内核，自主加载 |
-| Tun 透明代理 | 需宿主 `/dev/net/tun` 透传 | 原生支持 |
-| 网络性能 | 接近宿主（veth 直连） | 略有损耗（virtio） |
-| 推荐场景 | 纯代理 + DNS 分流（非 Tun 模式） | 需要 Tun 模式 / 完整内核功能 |
-
-> **结论**：若只用 `fakeip` + SOCKS 代理 + mosdns DNS 分流（本项目的默认模式），**LXC 容器**更轻量；若需要 `AIRPORT_TUN=true`（Tun 透明代理，劫持全局流量），用 **KVM 虚拟机**更省心。
-
-### PVE 网络拓扑
-
-```
-┌──────────────────────────────────────────────────────────┐
-│                    PVE 宿主机                              │
-│                                                          │
-│  ┌──────────────┐    ┌──────────────┐                   │
-│  │ ROS/爱快 主路由│    │  vmbr0 桥接   │                   │
-│  │ (或虚拟机/CT)  │◄──►│  192.168.1.x │                   │
-│  └──────┬───────┘    └──────┬───────┘                   │
-│         │                   │                            │
-│         │      ┌────────────┼────────────┐              │
-│         │      │            │            │              │
-│  ┌──────┴──┐ ┌─┴──────┐ ┌──┴─────┐ ┌────┴────┐        │
-│  │ 客户端A  │ │客户端B │ │ LXC/VM │ │ 其他VM  │        │
-│  │ .10     │ │ .11    │ │ .2     │ │         │        │
-│  └─────────┘ └────────┘ │mihomoDNS│ └─────────┘        │
-│                          │mosdns   │                   │
-│                          │clash    │                   │
-│                          └─────────┘                   │
-└──────────────────────────────────────────────────────────┘
-```
-
-- 主路由（ROS/爱快）可以是 PVE 上的虚拟机/LXC，也可以是物理机
-- mihomoDNS 作为旁路由/DNS 服务器，IP 固定为 `192.168.1.2`
-- 客户端 DNS 流量经主路由 DNAT 指向 `192.168.1.2:5335`
-
-### PVE LXC 容器完整部署
-
-#### 步骤 1：宿主前置准备
-
-在 PVE 宿主（SSH 或 Web Shell）执行：
+### PVE LXC 容器（推荐，纯 DNS+SOCKS 模式）
 
 ```bash
-# 1) 加载 TUN 模块（clash Tun 模式 / mosdns 需要）
-modprobe tun
-echo "tun" >> /etc/modules-load.d/tun.conf
+# ===== PVE 宿主执行 =====
 
-# 2) 确认 bridge-utils 与 lxcfs 正常（PVE 默认已装）
-apt update && apt install -y bridge-utils
+# 1. 加载 TUN 模块
+modprobe tun && echo "tun" >> /etc/modules-load.d/tun.conf
 
-# 3) 确认 vmbr0 桥接已存在（PVE 安装时默认创建）
-ip addr show vmbr0
-```
-
-#### 步骤 2：下载 LXC 模板
-
-PVE 后台 → 节点 → CT 模板 → 模板 → 下载：
-
-- 选择 `debian-12-standard` 或 `ubuntu-22.04-standard`
-
-或命令行下载：
-
-```bash
+# 2. 下载模板
 pveam update
 pveam download local debian-12-standard_12.2-1_amd64.tar.zst
-```
 
-#### 步骤 3：创建 LXC 容器
-
-**方式 A：PVE 后台图形界面**
-
-1. 节点 → 右键 → 创建 CT
-2. **常规**：CTID `100`，主机名 `mihomoDNS`，密码自设
-3. **模板**：选 `debian-12-standard`
-4. **磁盘**：4GB
-5. **CPU**：1 核
-6. **内存**：256MB（mosdns+clash 共跑建议 ≥256M，Tun 模式建议 ≥512M）
-7. **网络**：
-   - 名称：`eth0`
-   - 桥接：`vmbr0`
-   - IPv4：`192.168.1.2/24`
-   - 网关：`192.168.1.1`
-   - 取消勾选 DHCP
-8. **DNS**：`192.168.1.1`（先用主路由，安装后改自身）
-9. **确认** → 创建
-
-**方式 B：命令行创建（非特权容器，推荐）**
-
-```bash
-pct create 100 debian-12-standard_12.2-1_amd64.tar.zst \
-  --rootfs local-lvm:4 \
-  --ostype debian \
-  --hostname mihomoDNS \
-  --password your_password \
-  --memory 256 --swap 0 \
-  --cores 1 \
+# 3. 创建容器（CTID=100）
+pct create 100 local:vztmpl/debian-12-standard_12.2-1_amd64.tar.zst \
+  --rootfs local-lvm:4 --ostype debian --hostname mihomoDNS \
+  --memory 256 --swap 0 --cores 1 --password your_password \
   --net0 name=eth0,bridge=vmbr0,ip=192.168.1.2/24,gw=192.168.1.1 \
   --unprivileged 1
-```
 
-**方式 C：命令行创建（特权容器，简化但安全性低）**
-
-```bash
-pct create 100 debian-12-standard_12.2-1_amd64.tar.zst \
-  --rootfs local-lvm:4 \
-  --ostype debian \
-  --hostname mihomoDNS \
-  --password your_password \
-  --memory 256 --swap 0 \
-  --cores 1 \
-  --net0 name=eth0,bridge=vmbr0,ip=192.168.1.2/24,gw=192.168.1.1 \
-  --unprivileged 0
-```
-
-#### 步骤 4：开启关键特性（非特权容器必做）
-
-编辑容器配置（CTID=100）：
-
-```bash
-nano /etc/pve/lxc/100.conf
-```
-
-在文件末尾添加：
-
-```ini
-# 开启 TUN 设备（clash Tun 模式 / mosdns 需要）
+# 4. 关键特性（非特权容器必加）
+cat >> /etc/pve/lxc/100.conf <<'EOF'
 lxc.cgroup2.devices.allow: c 10:200 rwm
 lxc.mount.entry: /dev/net/tun dev/net/tun none bind,create=file
-
-# 开启 net_admin / net_raw / bind_service（iptables/路由/低端口需要）
 lxc.capabilities: cap_net_admin cap_net_raw cap_net_bind_service
-```
-
-> - `cap_net_admin` — 允许容器内执行 `ip route`、`iptables`、改网卡
-> - `cap_net_raw` — 允许 raw socket（部分 DNS 探测需要）
-> - `cap_net_bind_service` — 允许绑定 1024 以下端口（若想让 mosdns 监听 53）
-
-#### 步骤 5：启动容器并进入
-
-```bash
-pct start 100
-pct enter 100
-```
-
-#### 步骤 6：容器内网络配置（可选，创建时已指定则跳过）
-
-若创建时未指定 IP，或需要修改：
-
-```bash
-# 容器内编辑 /etc/network/interfaces
-cat > /etc/network/interfaces <<EOF
-auto lo
-iface lo inet loopback
-
-auto eth0
-iface eth0 inet static
-    address 192.168.1.2/24
-    gateway 192.168.1.1
-    dns-nameservers 192.168.1.1
 EOF
 
-# 应用配置
-ifdown eth0 && ifup eth0
-# 或重启容器：pct reboot 100
-```
-
-#### 步骤 7：容器内安装依赖与 mihomoDNS
-
-```bash
-# 更新系统
-apt update && apt install -y curl tar git iproute2 procps
-
-# 克隆项目
-cd /root
-git clone https://github.com/inzaghiaimar/mihomoDNS.git
-cd mihomoDNS
-
-# 先演练
-bash install.sh --dry-run --airport generic --subscription-url "https://你的订阅"
-
-# 正式安装
-bash install.sh --airport generic --subscription-url "https://你的订阅"
-
-# 若需同时写入本机静态路由
-bash install.sh --airport generic --subscription-url "https://你的订阅" \
-  --route-target linux --route-gateway 192.168.1.1
-```
-
-#### 步骤 8：路由配合（主路由侧）
-
-LXC 容器网络与虚拟机等价，在主路由做 DNS 劫持指向容器 IP：
-
-```bash
-# ROS 主路由
-bash install.sh --route-target ros \
-  --route-lan-ip 192.168.1.2 --route-ssh-host 192.168.1.1
-
-# 或爱快主路由
-bash install.sh --route-target ikuai \
-  --route-lan-ip 192.168.1.2 --route-ikuai-host 192.168.1.1
-```
-
-#### 步骤 9：设为开机自启
-
-```bash
-# PVE 宿主执行
+# 5. 启动并自启
+pct start 100
 pct set 100 --onboot 1
-```
 
-### PVE KVM 虚拟机完整部署
-
-#### 步骤 1：上传系统镜像
-
-1. 下载 Debian 12 或 Ubuntu 22.04 Server ISO
-2. PVE 后台 → 节点 → local → ISO 映像 → 上传
-
-#### 步骤 2：创建虚拟机
-
-PVE 后台 → 右上角创建虚拟机：
-
-- **常规**：节点自选，VMID `101`，名称 `mihomoDNS`
-- **系统**：机型 q35，BIOS 默认，SCSI 控制器 VirtIO SCSI single
-- **硬盘**：8GB，VirtIO Block，discard 勾选（SSD 建议）
-- **CPU**：1 核，类型 host（性能最佳）
-- **内存**：512MB（Tun 模式建议 ≥512M）
-- **网络**：VirtIO (paravirtualized)，桥接 `vmbr0`，取消防火墙勾选（避免拦截代理流量）
-- **确认** → 创建（先不启动）
-
-#### 步骤 3：启动并安装系统
-
-1. 选中虚拟机 → 启动
-2. 打开 Console，按提示安装 Debian/Ubuntu
-3. 安装时网络选择 DHCP 或手动指定 `192.168.1.2/24`，网关 `192.168.1.1`
-4. 只装基本系统 + SSH server，不装桌面环境
-5. 安装完重启
-
-#### 步骤 4：虚拟机内网络配置（若安装时未指定）
-
-```bash
-# 查看网卡名（现代 Linux 多为 ens18 / enp6s18 等）
-ip link
-
-# 编辑网络配置（Debian/Ubuntu）
-nano /etc/network/interfaces
-```
-
-```bash
-auto ens18
-iface ens18 inet static
-    address 192.168.1.2/24
-    gateway 192.168.1.1
-    dns-nameservers 192.168.1.1
-```
-
-```bash
-# 应用
-systemctl restart networking
-# 验证
-ip addr show ens18
-ip route show
-```
-
-#### 步骤 5：安装 mihomoDNS
-
-```bash
-apt update && apt install -y curl tar git
-
+# ===== 容器内执行 =====
+pct enter 100
+apt update && apt install -y curl tar git iproute2 procps
 cd /root
 git clone https://github.com/inzaghiaimar/mihomoDNS.git
 cd mihomoDNS
-
-# 演练
-bash install.sh --dry-run --airport generic --subscription-url "https://你的订阅"
-
-# 正式安装
 bash install.sh --airport generic --subscription-url "https://你的订阅"
 ```
 
-#### 步骤 6：开启 Tun 模式（KVM 推荐）
-
-KVM 虚拟机有独立内核，可完整支持 Tun 透明代理：
+### PVE KVM 虚拟机
 
 ```bash
-# 编辑机场配置开启 Tun
-sed -i 's/AIRPORT_TUN="false"/AIRPORT_TUN="true"/' airports/generic.conf
-
-# 重新安装（生成含 Tun 的 clash 配置）
-bash install.sh --airport generic --subscription-url "https://你的订阅"
-```
-
-Tun 模式下 clash 会创建虚拟网卡接管全局流量，无需主路由配合做 DNAT，但需关闭虚拟机自身防火墙对 Tun 网卡的拦截：
-
-```bash
-# 若装了 firewalld
-systemctl stop firewalld && systemctl disable firewalld
-
-# 或 ufw
-ufw disable
-```
-
-#### 步骤 7：路由配合（主路由侧）
-
-与 LXC 相同，在主路由做 DNS 劫持指向虚拟机 IP：
-
-```bash
-bash install.sh --route-target ros \
-  --route-lan-ip 192.168.1.2 --route-ssh-host 192.168.1.1
-```
-
-#### 步骤 8：设为开机自启
-
-PVE 后台 → 虚拟机 → 选项 → 自启动时启动 → 是。
-
-或命令行：
-
-```bash
+# PVE 宿主：创建 VM（VMID=101）
+qm create 101 --name mihomoDNS --memory 512 --cores 1 --sockets 1 \
+  --net0 virtio,bridge=vmbr0 --scsihw virtio-scsi-single \
+  --scsi0 local-lvm:8,discard=on --ide2 local:iso/debian-12-amd64-netinst.iso,media=cdrom \
+  --boot order=scsi0,ide2 --ostype l26
 qm set 101 --onboot 1
+qm start 101
+# 打开 Console 安装系统，IP/网关/DNS 指向 192.168.1.2 / 192.168.1.1 / 192.168.1.1
+
+# 虚拟机内：安装 mihomoDNS
+apt update && apt install -y curl tar git
+cd /root && git clone https://github.com/inzaghiaimar/mihomoDNS.git && cd mihomoDNS
+bash install.sh --airport generic --subscription-url "https://你的订阅"
 ```
 
-### PVE 部署后验证
-
-```bash
-# 1) 容器/虚拟机内验证 mihomoDNS 服务
-systemctl status mosdns
-clash doctor
-
-# 2) 验证 DNS 分流
-nslookup www.baidu.com 127.0.0.1 -port=5335   # 国内直连
-nslookup www.google.com 127.0.0.1 -port=5335  # 国外经代理
-
-# 3) 验证代理
-curl --socks5 127.0.0.1:7890 https://www.google.com -I
-
-# 4) 验证主路由 DNAT 是否生效（在客户端执行）
-nslookup www.google.com 192.168.1.1   # 主路由应转发到 192.168.1.2:5335
-
-# 5) PVE 层面验证
-pct status 100          # LXC 状态
-qm status 101           # KVM 状态
-pct config 100          # 查看 LXC 配置
-```
-
-### PVE 常见问题
-
-**Q：LXC 容器内 `ip route` 报权限不足？**
-A：容器缺少 `cap_net_admin`。编辑 `/etc/pve/lxc/<CTID>.conf` 添加 `lxc.capabilities: cap_net_admin cap_net_raw`，重启容器。
-
-**Q：LXC 内 clash Tun 模式启动失败（`/dev/net/tun` 不存在）？**
-A：宿主执行 `modprobe tun`，并在容器配置添加 `lxc.mount.entry: /dev/net/tun dev/net/tun none bind,create=file`。若仍不行，改用 KVM 虚拟机或关闭 Tun（`AIRPORT_TUN=false`，用 fakeip + SOCKS 模式即可）。
-
-**Q：LXC 容器内 mosdns 无法绑定 53 端口？**
-A：非特权容器默认无法绑 1024 以下端口。方案：① 用主路由 DNAT 53→5335（推荐）；② 添加 `cap_net_bind_service`；③ 用特权容器。
-
-**Q：PVE 宿主与容器/虚拟机网络不通？**
-A：确认 `vmbr0` 桥接正常、容器/虚拟机的 IP 与宿主在同一网段、防火墙未拦截。用 `ping` 与 `tcpdump -i vmbr0` 排查。
-
-**Q：KVM 虚拟机网卡名不是 eth0？**
-A：现代 Linux 用预测网卡名（如 `ens18`）。用 `--route-lan-if ens18` 指定，或恢复传统命名：`ln -s /dev/null /etc/systemd/network/99-default.link` 后重启。
-
-**Q：PVE 防火墙拦截了代理流量？**
-A：虚拟机选项里取消「防火墙」勾选，或在 PVE 后台 → 防火墙 → 规则中放行 7890/9090/5335/9099 端口。
-
-**Q：容器/虚拟机重启后服务没自启？**
-A：mosdns 走 systemd（`systemctl enable mosdns`）；clash 走 `clash-for-linux` 的启动脚本（安装时已注册 rc.local 或 systemd）。
-
----
-
-## ESXi 部署操作手册
-
-VMware ESXi 是企业级 Type-1 Hypervisor，部署 mihomoDNS 需使用 **ESXi 虚拟机**（ESXi 不支持 LXC 容器）。
-
-### ESXi 环境准备
-
-#### 1) 网络规划
-
-| 角色 | IP | 说明 |
-| --- | --- | --- |
-| ESXi 宿主 | `192.168.1.10` | 管理网段 |
-| 主路由（ROS/爱快） | `192.168.1.1` | DNS 劫持与网关 |
-| mihomoDNS 虚拟机 | `192.168.1.2` | 旁路由/DNS 服务器 |
-| 客户端 | `192.168.1.x` | 经主路由指向 mihomoDNS |
-
-#### 2) ESXi 网络拓扑
+### ESXi 虚拟机
 
 ```
-┌──────────────────────────────────────────────────────────┐
-│                    ESXi 宿主机                             │
-│                                                          │
-│  ┌──────────────┐    ┌──────────────┐                   │
-│  │ 物理交换机/   │    │ vSwitch0     │                   │
-│  │ 主路由        │◄──►│ 虚拟交换机    │                   │
-│  │ 192.168.1.1  │    │ VM Network   │                   │
-│  └──────┬───────┘    └──────┬───────┘                   │
-│         │                   │                            │
-│         │      ┌────────────┼────────────┐              │
-│         │      │            │            │              │
-│  ┌──────┴──┐ ┌─┴──────┐ ┌──┴───────┐ ┌───┴────┐        │
-│  │ 客户端A  │ │客户端B │ │mihomoDNS │ │ 其他VM │        │
-│  │ .10     │ │ .11    │ │ VM .2    │ │        │        │
-│  └─────────┘ └────────┘ │mosdns    │ └────────┘        │
-│                          │clash     │                   │
-│                          └──────────┘                   │
-└──────────────────────────────────────────────────────────┘
+vSphere Client → 创建虚拟机：
+  OS: Debian 12 / Ubuntu 22.04
+  CPU: 1核 | 内存: 512M | 硬盘: 8G 精简置备
+  网卡: VMXNET3, 端口组 VM Network
+  CD/DVD: 上传的 Debian ISO
 ```
-
-#### 3) ESXi 前置检查
-
-```bash
-# 通过 SSH 登录 ESXi Shell（需在 DCUI 中启用 SSH）
-# 确认网络与虚拟交换机
-esxcfg-vswitch -l          # 列出虚拟交换机
-esxcfg-vmknic -l           # 列出管理网卡
-esxcli network ip interface list
-```
-
-### ESXi 虚拟机创建完整步骤
-
-#### 步骤 1：上传系统镜像 ISO
-
-1. 下载 Debian 12 或 Ubuntu 22.04 Server ISO
-2. vSphere Client → 主机 → 数据存储 → 数据存储浏览器 → 上传 ISO
-3. 建议路径：`[datastore1] ISO/debian-12.x.x-amd64-netinst.iso`
-
-#### 步骤 2：创建虚拟机
-
-vSphere Client → 主机 → 右键 → 新建虚拟机：
-
-**常规**：
-- 名称：`mihomoDNS`
-- 兼容性：ESXi 7.0 U2 及更高（按宿主版本）
-- 客户机操作系统系列：Linux
-- 客户机操作系统版本：Debian GNU/Linux 12 (64 位) / Ubuntu Linux (64 位)
-
-**硬件**（选择「自定义」）：
-- **CPU**：1 核（Tun 模式建议 2 核）
-- **内存**：512MB（Tun 模式建议 1GB）
-- **硬盘**：8GB，磁盘置备「精简置备」（Thin Provision）
-- **SCSI 控制器**：VMware Paravirtual（PVSCSI，性能最佳）
-- **网络适配器**：VMXNET3（最佳性能），端口组 `VM Network`
-- **CD/DVD**：指向步骤 1 上传的 ISO
-- **视频卡**：默认即可
-
-**就绪完成** → 创建后先不启动。
-
-#### 步骤 3：调整虚拟机选项（可选优化）
-
-选中虚拟机 → 编辑设置 → 虚拟机选项：
-- **引导选项**：固件 BIOS（Debian 默认），启动延迟 0
-- **高级参数** → 配置参数 → 添加：
-  - `disk.EnableUUID` = `TRUE`（快照一致性）
-
-#### 步骤 4：启动并安装系统
-
-1. 选中虚拟机 → 启动 → 打开 Web Console
-2. 选择 `Install`（非 Graphical Install，省资源）
-3. 语言/区域按需，主机名 `mihomoDNS`，域名留空
-4. **网络配置**：
-   - 取消 DHCP，手动配置
-   - IP：`192.168.1.2`
-   - 子网掩码：`255.255.255.0`
-   - 网关：`192.168.1.1`
-   - DNS：`192.168.1.1`（先用主路由，安装 mihomoDNS 后改 `127.0.0.1`）
-5. **分区**：使用整个磁盘，LVM（推荐，便于扩容）
-6. **软件选择**：只勾选 `SSH server` + `standard system utilities`，取消桌面环境
-7. 安装 GRUB 到主引导记录 → 完成重启
-
-#### 步骤 5：安装 VMware Tools（强烈推荐）
 
 ```bash
 # 虚拟机内
-apt update && apt install -y open-vm-tools
-systemctl enable open-vm-tools
-systemctl start open-vm-tools
-```
+apt update && apt install -y curl tar git open-vm-tools iproute2 procps
+systemctl enable --now open-vm-tools
 
-### ESXi 网络配置
-
-#### 步骤 6：虚拟机内静态 IP 配置（若安装时用 DHCP）
-
-```bash
-# 查看网卡名（VMXNET3 通常为 ens192 / eth0）
-ip link
-
-# Debian/Ubuntu 配置静态 IP
-nano /etc/network/interfaces
-```
-
-```bash
+# 静态 IP（若安装时用 DHCP）
+cat > /etc/network/interfaces <<'EOF'
 auto ens192
 iface ens192 inet static
     address 192.168.1.2/24
     gateway 192.168.1.1
     dns-nameservers 192.168.1.1
-```
-
-```bash
-# 应用配置
+EOF
 systemctl restart networking
 
-# 验证
-ip addr show ens192
-ip route show
-ping -c 3 192.168.1.1
-```
-
-#### 步骤 7：关闭虚拟机防火墙（避免拦截代理流量）
-
-```bash
-# Debian 默认无防火墙，若有则关闭
-systemctl stop firewalld 2>/dev/null && systemctl disable firewalld
-ufw disable 2>/dev/null
-
-# 确认 nftables 未拦截
-nft list ruleset 2>/dev/null | head
-```
-
-#### 步骤 8：ESXi 端口组放行（若启用了 VLAN/安全策略）
-
-vSphere Client → 主机 → 网络 → 虚拟交换机 → `vSwitch0` → 安全策略：
-- 混杂模式：**接受**（旁路由监听/转发需要）
-- MAC 地址变更：接受
-- 伪传输：接受
-
-> 旁路由场景下，混杂模式开启可避免某些异常流量被丢弃。
-
-### ESXi 安装 mihomoDNS
-
-#### 步骤 9：安装依赖并克隆项目
-
-```bash
-apt update && apt install -y curl tar git iproute2 procps
-
-cd /root
-git clone https://github.com/inzaghiaimar/mihomoDNS.git
-cd mihomoDNS
-```
-
-#### 步骤 10：演练与安装
-
-```bash
-# 演练
-bash install.sh --dry-run --airport generic --subscription-url "https://你的订阅"
-
-# 正式安装
+# 安装 mihomoDNS
+cd /root && git clone https://github.com/inzaghiaimar/mihomoDNS.git && cd mihomoDNS
 bash install.sh --airport generic --subscription-url "https://你的订阅"
 
-# 同时写入本机静态路由（默认网关 + rp_filter + ip_forward）
-bash install.sh --airport generic --subscription-url "https://你的订阅" \
-  --route-target linux --route-gateway 192.168.1.1
+# ESXi 端口组（旁路由推荐）：vSwitch0 安全策略 → 混杂模式 = 接受
 ```
 
-#### 步骤 11：开启 Tun 模式（ESXi 推荐）
-
-ESXi 虚拟机有完整内核，支持 Tun 透明代理：
+### 部署后验证（LXC/KVM/ESXi 通用）
 
 ```bash
-# 开启 Tun
-sed -i 's/AIRPORT_TUN="false"/AIRPORT_TUN="true"/' airports/generic.conf
-
-# 重新安装
-bash install.sh --airport generic --subscription-url "https://你的订阅"
-```
-
-#### 步骤 12：主路由侧 DNS 劫持
-
-在 ROS/爱快主路由上把客户端 53 端口流量指向 ESXi 虚拟机：
-
-```bash
-# ROS
-bash install.sh --route-target ros \
-  --route-lan-ip 192.168.1.2 --route-ssh-host 192.168.1.1
-
-# 或爱快
-bash install.sh --route-target ikuai \
-  --route-lan-ip 192.168.1.2 --route-ikuai-host 192.168.1.1
-```
-
-#### 步骤 13：设为开机自启
-
-```bash
-# mosdns（systemd 已自动注册）
-systemctl enable mosdns
-
-# clash（clash-for-linux 已注册启动脚本）
-# 验证
-systemctl status mosdns
-crontab -l | grep clash    # 或 rc.local
-```
-
-ESXi 侧设为开机自启：vSphere Client → 虚拟机 → 管理 → 自动启动 → 启用 → 设为「与主机一起自动启动」。
-
-### ESXi 部署后验证
-
-```bash
-# 1) 服务状态
+# 服务
 systemctl status mosdns
 clash doctor
 
-# 2) DNS 分流测试
-nslookup www.baidu.com 127.0.0.1 -port=5335
-nslookup www.google.com 127.0.0.1 -port=5335
+# DNS 分流
+dig @127.0.0.1 -p 5335 www.baidu.com +short   # 国内直连
+dig @127.0.0.1 -p 5335 google.com +short      # 国外走代理
 
-# 3) 代理测试
-curl --socks5 127.0.0.1:7890 https://www.google.com -I
-
-# 4) 路由验证
-ip route show
-sysctl net.ipv4.ip_forward
-sysctl net.ipv4.conf.all.rp_filter
-
-# 5) ESXi 侧验证
-# vSphere Client → 虚拟机 → 状态为「已打开电源」
-# 性能图表查看 CPU/内存占用
+# 代理连通
+curl -s --socks5 127.0.0.1:7890 https://api.ipify.org
 ```
 
-### ESXi 常见问题
+### 虚拟化常见坑
 
-**Q：VMXNET3 网卡在系统中不可见？**
-A：安装 `open-vm-tools`，或临时改用 E1000E 网卡（兼容性好但性能差）。
-
-**Q：虚拟机网络不通（ping 不通主路由）？**
-A：① 检查端口组 `VM Network` 桥接到正确的物理网卡；② 确认虚拟机 IP 与宿主同网段；③ 检查 vSwitch 安全策略是否过严。
-
-**Q：ESXi 防火墙拦截了端口？**
-A：ESXi 默认防火墙只拦截宿主管理端口，虚拟机流量不受影响。若虚拟机内装了 firewalld/ufw，需在虚拟机内关闭。
-
-**Q：Tun 模式下虚拟机流量异常？**
-A：① 关闭虚拟机内防火墙；② ESXi vSwitch 安全策略开启混杂模式；③ 确认 `ip_forward` 已开启（`sysctl net.ipv4.ip_forward=1`）。
-
-**Q：精简置备磁盘满了？**
-A：vSphere Client → 数据存储 → 查看使用率。若超 80% 需扩容或清理。精简置备按实际使用计算，8GB 虚拟盘实际占用通常 < 2GB。
-
-**Q：虚拟机重启后服务未自启？**
-A：① 确认 `systemctl enable mosdns`；② ESXi 设为「与主机一起自动启动」；③ 检查 clash-for-linux 的启动脚本是否在 rc.local 或 systemd。
-
-**Q：网卡名是 ens192 而非 eth0？**
-A：VMXNET3 网卡预测命名通常为 `ens192`。用 `--route-lan-if ens192` 指定，或恢复传统命名。
-
----
+| 问题 | 解决 |
+| --- | --- |
+| LXC: `/dev/net/tun` 不存在 | 宿主 `modprobe tun` + 容器 conf 加 lxc.mount.entry 行 |
+| LXC: `ip route` 权限不足 | 容器 conf 加 `lxc.capabilities: cap_net_admin cap_net_raw` |
+| PVE 防火墙拦截端口 | 创建 CT/VM 时取消「防火墙」勾选，或 PVE 后台防火墙放行 7890/9090/5335/9099 |
+| ESXi: VMXNET3 网卡不可见 | `apt install open-vm-tools` 或临时改用 E1000E |
+| ESXi: 旁路由丢包 | vSwitch 安全策略 → 混杂模式 = 接受 |
+| 网卡名不是 eth0 | `ip link` 查看实际名（LXC 多为 `eth0`，KVM `ens18`，ESXi `ens192`） |
 
 ## 安装后使用
 
