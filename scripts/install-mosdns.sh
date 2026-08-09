@@ -163,6 +163,20 @@ WantedBy=multi-user.target
 EOF
   systemctl daemon-reload
   success "已写入 systemd unit：$unit_file"
+
+  # 创建 systemd override 注入代理环境变量
+  # mosdns WebUI 检查更新需要访问 GitHub，服务器无法直连时通过 clash 代理
+  local override_dir="/etc/systemd/system/mosdns.service.d"
+  local override_file="$override_dir/proxy.conf"
+  mkdir -p "$override_dir"
+  cat > "$override_file" <<EOF
+[Service]
+Environment="http_proxy=http://127.0.0.1:${CLASH_MIXED_PORT}"
+Environment="https_proxy=http://127.0.0.1:${CLASH_MIXED_PORT}"
+Environment="no_proxy=127.0.0.1,localhost,192.168.0.0/16,10.0.0.0/8,172.16.0.0/12"
+EOF
+  systemctl daemon-reload
+  success "已注入代理环境变量到 mosdns systemd override"
 }
 
 # 卸载 mosdns
@@ -172,6 +186,7 @@ uninstall_mosdns() {
     systemctl stop mosdns 2>/dev/null || true
     systemctl disable mosdns 2>/dev/null || true
     rm -f /etc/systemd/system/mosdns.service
+    rm -rf /etc/systemd/system/mosdns.service.d
     systemctl daemon-reload
   fi
   if mosdns_installed; then

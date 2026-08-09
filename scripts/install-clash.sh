@@ -53,7 +53,60 @@ install_clash() {
   fi
   popd >/dev/null
 
+  # 部署 clash WebUI 面板（上游 install.sh 可能未部署）
+  deploy_clash_webui
+
   success "clash-for-linux 安装完成"
+}
+
+# 部署 clash WebUI 面板
+# 从 GitHub 下载 zashboard 面板到 runtime/dashboard/
+# 解决 WebUI 打开空白的问题
+deploy_clash_webui() {
+  local dashboard_dir="$CLASH_DIR/runtime/dashboard"
+  local index_file="$dashboard_dir/index.html"
+
+  # 已部署则跳过
+  if [[ -f "$index_file" ]]; then
+    success "clash WebUI 面板已存在：$dashboard_dir"
+    return 0
+  fi
+
+  step "部署 clash WebUI 面板"
+  mkdir -p "$dashboard_dir"
+  local tmp_zip; tmp_zip="$(mktemp)"
+  local ui_url="https://github.com/Zephyruso/zashboard/releases/latest/download/dist.zip"
+  local proxy_url="${CLASH_GH_PROXY:+$CLASH_GH_PROXY/}$ui_url"
+
+  # 先走代理下载，失败则直连
+  if ! download "$proxy_url" "$tmp_zip" 2>/dev/null; then
+    if ! download "$ui_url" "$tmp_zip" 2>/dev/null; then
+      rm -f "$tmp_zip"
+      warn "下载 clash WebUI 面板失败，请手动执行：clash ui"
+      return 1
+    fi
+  fi
+
+  # 解压到 dashboard 目录
+  if ! unzip -o "$tmp_zip" -d "$tmp_zip.extract" 2>/dev/null; then
+    rm -rf "$tmp_zip" "$tmp_zip.extract"
+    warn "解压 clash WebUI 面板失败"
+    return 1
+  fi
+
+  # dist.zip 解压后含 dist/ 子目录，需把内容移到 dashboard 根目录
+  if [[ -d "$tmp_zip.extract/dist" ]]; then
+    cp -a "$tmp_zip.extract/dist/." "$dashboard_dir/"
+  else
+    cp -a "$tmp_zip.extract/." "$dashboard_dir/"
+  fi
+  rm -rf "$tmp_zip" "$tmp_zip.extract"
+
+  if [[ -f "$index_file" ]]; then
+    success "已部署 clash WebUI 面板：$dashboard_dir"
+  else
+    warn "clash WebUI 面板部署异常，index.html 未找到"
+  fi
 }
 
 # 卸载 clash
