@@ -390,5 +390,27 @@ ${sequence_args}
       entry: main_sequence
       listen: ${MOSDNS_LISTEN_ADDR}:${MOSDNS_DNS_PORT}
 EOF
+
+  # 额外监听 53 端口（局域网客户端直连，不经过主路由 NAT）
+  # 同子网客户端 DNS 查询走 L2 直达，不经过路由器，ROS 的 dst-nat 不生效
+  # 需要 mosdns 直接监听 53 端口，客户端才能用 192.168.x.x 作为 DNS
+  if [[ "${MOSDNS_DNS_PORT}" != "53" ]]; then
+    cat >> "$out" <<'EOF53'
+
+  # 额外监听 53 端口（局域网客户端直连）
+  - tag: lan_udp_server
+    type: udp_server
+    args:
+      entry: main_sequence
+      listen: 0.0.0.0:53
+
+  - tag: lan_tcp_server
+    type: tcp_server
+    args:
+      entry: main_sequence
+      listen: 0.0.0.0:53
+EOF53
+  fi
+
   success "已生成 mosdns 配置：$out"
 }
